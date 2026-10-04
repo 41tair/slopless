@@ -1,5 +1,5 @@
 {
-  "name": "slopless",
+  "name": "@slopless/extension",
   "private": true,
   "type": "module",
   "scripts": {

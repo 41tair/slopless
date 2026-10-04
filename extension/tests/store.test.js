@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_SETTINGS, normalizeLogin, normalizeSettings, validateSettings, permissionOrigin, readSettings, saveSettings } from "../extension/scripts/store.js";
+import { DEFAULT_SETTINGS, normalizeLogin, normalizeSettings, validateSettings, permissionOrigin, readSettings, saveSettings } from "../scripts/store.js";
 
 test("GitHub usernames are case insensitive and support bot accounts", () => {
   assert.equal(normalizeLogin("  Develop-KIM "), "develop-kim");

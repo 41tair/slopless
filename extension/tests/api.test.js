@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAccountService, validateData, CACHE_PREFIX, CACHE_TTL_MS, IDEMPOTENCY_TTL_MS } from "../extension/scripts/api.js";
-import { DEFAULT_SETTINGS } from "../extension/scripts/store.js";
+import { createAccountService, validateData, CACHE_PREFIX, CACHE_TTL_MS, IDEMPOTENCY_TTL_MS } from "../scripts/api.js";
+import { DEFAULT_SETTINGS } from "../scripts/store.js";
 
 const account = username => ({ platform: "github", username });
 const record = (username, markCount = 0, markedByMe = false) => ({ ...account(username), marked: markCount > 0, markCount, markedByMe });
