@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Slopless</title>
+    <link rel="stylesheet" href="styles/ui.css">
+    <script type="module" src="scripts/popup.js"></script>
+  </head>
+  <body class="popup">
+    <header class="topbar">
+      <h1>Slopless</h1>
+      <button class="text-button" id="open-settings">Settings</button>
+    </header>
+    <main class="popup-main">
+      <section id="loading" class="empty-state" role="status">
+        <h2>Reading current page…</h2>
+        <p>Looking for a pull request, issue, or profile author.</p>
+      </section>
+      <section id="empty-state" class="empty-state" hidden>
+        <h2 id="empty-title">Open a GitHub page</h2>
+        <p id="empty-description">Open a pull request, issue, or personal profile, then click Slopless.</p>
+        <button id="retry" class="button secondary">Try again</button>
+      </section>
+      <section id="account-card" class="account-details" aria-label="Current account" hidden>
+        <p id="page-type" class="muted"></p>
+        <div class="identity"><span class="muted" id="author-label">Author</span><a id="profile-link" class="username" target="_blank" rel="noopener noreferrer"></a></div>
+        <p id="repository" class="repository muted"></p>
+        <p id="page-title" class="page-title"></p>
+      </section>
+      <section id="mark-action" class="mark-action" hidden>
+        <h2 id="action-title">Mark this account?</h2>
+        <p id="action-description"></p>
+        <button id="toggle-mark" class="button primary full-width" disabled>Mark account</button>
+        <button id="refresh-status" class="text-button">Refresh status</button>
+      </section>
+      <p id="feedback" class="feedback" role="status" aria-live="polite" hidden></p>
+    </main>
+    <footer class="popup-footer"><p>Filter: <span id="current-level">—</span></p></footer>
+  </body>
+</html>

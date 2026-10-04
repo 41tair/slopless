@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Settings · Slopless</title>
+    <link rel="icon" href="slopless-icon.png">
+    <link rel="stylesheet" href="styles/ui.css">
+    <script type="module" src="scripts/settings.js"></script>
+  </head>
+  <body class="settings-page">
+    <main class="settings-layout">
+      <h1>Slopless settings</h1>
+      <form id="settings-form">
+        <fieldset id="settings-fields" disabled>
+          <section class="settings-section" aria-labelledby="api-heading">
+            <h2 id="api-heading">API</h2>
+            <div class="field"><label for="endpoint">Endpoint</label><input id="endpoint" name="endpoint" type="url" placeholder="https://slopless.byron.fun/openapi/v1" spellcheck="false" autocomplete="off"></div>
+            <div class="field"><label for="api-key">API token</label><div class="secret-input"><input id="api-key" name="apiKey" type="password" placeholder="API token" spellcheck="false" autocomplete="off" aria-describedby="api-help"><button type="button" id="toggle-key" aria-label="Show API token" aria-pressed="false">Show</button></div></div>
+            <p class="field-help" id="api-help">Required to check and mark accounts. Stored locally in the extension.</p>
+          </section>
+          <section class="settings-section" aria-labelledby="scope-heading">
+            <h2 id="scope-heading">Blocking scope</h2>
+            <fieldset class="scope-options" aria-describedby="scope-help"><legend class="sr-only">Apply filtering to</legend>
+              <label><input id="scope-pr" name="scope-pr" type="checkbox"> Pull requests</label>
+              <label><input id="scope-issue" name="scope-issue" type="checkbox"> Issues</label>
+            </fieldset>
+            <p class="field-help" id="scope-help">Uncheck both to pause filtering. Your marked accounts are kept.</p>
+          </section>
+          <section class="settings-section" aria-labelledby="level-heading">
+            <h2 id="level-heading">Blocking level</h2>
+            <fieldset class="level-options"><legend class="sr-only">Select blocking level</legend>
+              <label class="level-option"><input type="radio" name="level" value="mark"><span>Mark only<span class="field-help">Show a label next to marked accounts.</span></span></label>
+              <label class="level-option"><input type="radio" name="level" value="dim"><span>Dim<span class="field-help">Fade marked entries. Hover or focus to reveal.</span></span></label>
+              <label class="level-option"><input type="radio" name="level" value="hide"><span>Hide<span class="field-help">Hide marked entries from the selected lists.</span></span></label>
+            </fieldset>
+          </section>
+          <section class="settings-section" aria-labelledby="display-heading">
+            <h2 id="display-heading">Display</h2>
+            <div class="scope-options"><label><input id="show-mark-count" name="show-mark-count" type="checkbox" aria-describedby="mark-count-help"> Show mark count</label></div>
+            <p class="field-help" id="mark-count-help">Show available counts after the label, e.g. Marked 3 times.</p>
+          </section>
+          <div class="save-bar"><button id="save-settings" type="submit" class="button primary">Save settings</button><button id="reset-settings" type="button" class="button secondary">Reset defaults</button><span id="save-state" class="save-state" role="status" aria-live="polite">Loading…</span></div>
+        </fieldset>
+        <p id="settings-feedback" class="feedback" role="status" aria-live="polite" hidden></p>
+      </form>
+    </main>
+  </body>
+</html>

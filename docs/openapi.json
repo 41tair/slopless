@@ -1,0 +1,962 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Slopless Public API",
+    "version": "1.0.0-draft",
+    "description": "Proposed HTTP contract for the future Go service. Public token routes use /openapi/v1; web-session routes are reserved under /api/v1 and excluded here. Targets use platform and username identifiers. Counts represent distinct Slopless users with active marks per platform account. Successful response bodies contain only account-state data; tracing IDs are response headers. The client owns local cache expiry and must discard older in-flight query results after a successful mark."
+  },
+  "servers": [
+    {
+      "url": "https://slopless.byron.fun/openapi/v1",
+      "description": "Proposed public API base URL; not yet implemented"
+    }
+  ],
+  "security": [
+    {
+      "UserToken": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Accounts"
+    }
+  ],
+  "paths": {
+    "/accounts/query": {
+      "post": {
+        "operationId": "queryAccounts",
+        "summary": "Query mark status for multiple platform accounts",
+        "description": "Returns each distinct normalized (platform, username) pair in first occurrence order, including unseen accounts on enabled platforms as unmarked. Does not verify upstream existence. Unsupported platforms reject the whole batch. No mark side effects.",
+        "tags": [
+          "Accounts"
+        ],
+        "x-required-scopes": [
+          "accounts:read"
+        ],
+        "x-max-body-bytes": 16384,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              },
+              "example": {
+                "accounts": [
+                  {
+                    "platform": "github",
+                    "username": "Example-Author"
+                  },
+                  {
+                    "platform": "github",
+                    "username": "another-author"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A consistent account snapshot.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "platform": "github",
+                      "username": "example-author",
+                      "marked": true,
+                      "markCount": 3,
+                      "markedByMe": false
+                    },
+                    {
+                      "platform": "github",
+                      "username": "another-author",
+                      "marked": false,
+                      "markCount": 0,
+                      "markedByMe": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "413": {
+            "$ref": "#/components/responses/TooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMedia"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/accounts/mark": {
+      "post": {
+        "operationId": "markAccounts",
+        "summary": "Set the current user's mark state for multiple platform accounts",
+        "description": "Atomic desired-state mutation across all requested platform accounts. The same username on different platforms is a different account. Multiple tokens for one Slopless user count once per platform account. False withdraws only the caller's mark. Repeating the desired state does not increment counts. Completed idempotency results are retained for at least 24 hours; matching replays preserve the original data. A replay reflects the original operation rather than current account state. On Idempotency-Replayed: true, query current state before refreshing the local account cache.",
+        "tags": [
+          "Accounts"
+        ],
+        "x-required-scopes": [
+          "marks:write"
+        ],
+        "x-max-body-bytes": 16384,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkRequest"
+              },
+              "example": {
+                "accounts": [
+                  {
+                    "platform": "github",
+                    "username": "Example-Author"
+                  },
+                  {
+                    "platform": "github",
+                    "username": "another-author"
+                  }
+                ],
+                "marked": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "All desired-state changes committed, or the original successful result was replayed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Idempotency-Replayed": {
+                "$ref": "#/components/headers/IdempotencyReplayed"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkResponse"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "platform": "github",
+                      "username": "example-author",
+                      "marked": true,
+                      "markCount": 4,
+                      "markedByMe": true
+                    },
+                    {
+                      "platform": "github",
+                      "username": "another-author",
+                      "marked": true,
+                      "markCount": 1,
+                      "markedByMe": true
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/TooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMedia"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "User- and route-scoped key for one intended operation. Fingerprint includes ordered normalized unique account objects (both platform and username) and marked. New action requires a new key.",
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "example": "c51e8f86-0f18-4e2b-9563-33f5c4dbbe7a"
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Slopless API token",
+        "description": "Opaque token belonging to a Slopless user, independent of the marked account platform. Query requires accounts:read; mark requires marks:write. Cookie authentication is not accepted."
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Server-generated tracing ID, exposed only in X-Request-Id. Each HTTP attempt gets a fresh ID, including idempotency replays.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "CacheControl": {
+        "description": "Personalized responses are not stored by HTTP caches.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "const": "no-store"
+        }
+      },
+      "RetryAfter": {
+        "description": "Minimum delay in seconds before retrying; equals retryAfterSeconds in the body.",
+        "required": true,
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "Authenticate": {
+        "description": "Bearer challenge. Includes invalid_token for invalid credentials, or insufficient_scope and scope for scope failures.",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "IdempotencyReplayed": {
+        "description": "True if the original committed mark result was replayed.",
+        "required": true,
+        "schema": {
+          "type": "boolean"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed JSON (including duplicate keys or trailing JSON), or a missing/invalid mark idempotency key.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid, expired, or revoked API token.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "WWW-Authenticate": {
+            "$ref": "#/components/headers/Authenticate"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The token does not grant the required scope.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "WWW-Authenticate": {
+            "$ref": "#/components/headers/Authenticate"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "idempotency_conflict: key reused with different normalized input. idempotency_in_progress: retry the same request after at least one second.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "Retry-After": {
+            "description": "Required with value 1 only for idempotency_in_progress; omitted for idempotency_conflict.",
+            "schema": {
+              "type": "integer",
+              "const": 1
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "TooLarge": {
+        "description": "Request body exceeds 16 KiB.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "UnsupportedMedia": {
+        "description": "Unsupported Content-Type or compressed request body.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "ValidationFailed": {
+        "description": "Invalid request fields, unsupported platform, invalid platform-specific username, or batch size. The whole batch is rejected; no writes occur.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "about:blank",
+              "title": "Unprocessable Content",
+              "status": 422,
+              "detail": "One or more request fields are invalid.",
+              "code": "validation_failed",
+              "errors": [
+                {
+                  "path": "/accounts/1/username",
+                  "code": "invalid_username",
+                  "message": "Use an account username, not a profile URL."
+                }
+              ]
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "At least one rate policy rejects the batch. No mark side effects. Retry-After accounts for all currently blocking policies.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/RateLimitProblem"
+            },
+            "example": {
+              "type": "about:blank",
+              "title": "Too Many Requests",
+              "status": 429,
+              "detail": "The mark account budget has been exceeded.",
+              "code": "rate_limited",
+              "retryAfterSeconds": 30,
+              "rateLimit": {
+                "policy": "mark.user.accounts.minute",
+                "limit": 200,
+                "windowSeconds": 60,
+                "unit": "accounts"
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected failure. Retry an uncertain write with the original key and payload.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Temporary dependency failure, including unavailable shared rate accounting. Retry with the same key for an uncertain write.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/UnavailableProblem"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "QueryRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "accounts"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/AccountInput"
+            },
+            "description": "Raw array limit is checked before platform-specific normalization and deduplication by (platform, username). Results preserve first occurrence order. Mixed enabled platforms are allowed."
+          }
+        }
+      },
+      "MarkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "accounts",
+          "marked"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/AccountInput"
+            },
+            "description": "Raw array limit is checked before platform-specific normalization and deduplication by (platform, username). Results preserve first occurrence order. Mixed enabled platforms are allowed."
+          },
+          "marked": {
+            "type": "boolean",
+            "description": "Desired state of the authenticated user's own mark for every requested platform account. False withdraws only this user's contribution."
+          }
+        }
+      },
+      "AccountState": {
+        "type": "object",
+        "required": [
+          "platform",
+          "username",
+          "marked",
+          "markCount",
+          "markedByMe"
+        ],
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "username": {
+            "$ref": "#/components/schemas/Username"
+          },
+          "marked": {
+            "type": "boolean",
+            "description": "True if and only if markCount is greater than zero."
+          },
+          "markCount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Number of distinct Slopless users with active marks on this (platform, username) account; multiple tokens for one user count once."
+          },
+          "markedByMe": {
+            "type": "boolean",
+            "description": "Whether the authenticated user has an active mark; implies marked is true."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "marked": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "markCount": {
+                  "minimum": 1
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "markCount": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "markedByMe": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "marked": {
+                  "const": true
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "platform": {
+                  "const": "github"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "username": {
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,38}(\\[bot\\])?$"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "QueryResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/AccountState"
+            }
+          }
+        }
+      },
+      "MarkResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/AccountState"
+            }
+          }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "required": [
+          "path",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "JSON Pointer into the original request before normalization."
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "RateLimit": {
+        "type": "object",
+        "required": [
+          "policy",
+          "limit",
+          "windowSeconds",
+          "unit"
+        ],
+        "properties": {
+          "policy": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "requests",
+              "accounts"
+            ]
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri-reference",
+            "default": "about:blank"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable code; do not branch on title or detail."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            }
+          },
+          "retryAfterSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Must match Retry-After when present."
+          },
+          "rateLimit": {
+            "$ref": "#/components/schemas/RateLimit"
+          }
+        }
+      },
+      "RateLimitProblem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Problem"
+          },
+          {
+            "type": "object",
+            "required": [
+              "retryAfterSeconds",
+              "rateLimit"
+            ],
+            "properties": {
+              "status": {
+                "const": 429
+              },
+              "code": {
+                "const": "rate_limited"
+              }
+            }
+          }
+        ]
+      },
+      "UnavailableProblem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Problem"
+          },
+          {
+            "type": "object",
+            "required": [
+              "retryAfterSeconds"
+            ],
+            "properties": {
+              "status": {
+                "const": 503
+              },
+              "code": {
+                "const": "service_unavailable"
+              }
+            }
+          }
+        ]
+      },
+      "Platform": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+        "description": "Immutable registry identifier for one platform instance. Required, lowercase, with no default. Initially github is enabled. Additional instances need registered validation and normalization rules. Unsupported or disabled identifiers cause 422 with field code unsupported_platform."
+      },
+      "InputUsername": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Username to validate and normalize using the selected platform rules. Must be nonempty after trimming. Do not lowercase all platforms globally. No profile URLs or display names."
+      },
+      "Username": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Canonical username under the accompanying platform; case normalization is platform-specific."
+      },
+      "AccountInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "platform",
+          "username"
+        ],
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "username": {
+            "$ref": "#/components/schemas/InputUsername"
+          }
+        },
+        "description": "One target account. Identity, deduplication, counting, and cache keys use both platform and normalized username. Mixed enabled platforms are allowed in one batch.",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "platform": {
+                  "const": "github"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "username": {
+                  "pattern": "^\\s*[A-Za-z0-9][A-Za-z0-9-]{0,38}(\\[bot\\])?\\s*$"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "x-rate-limits": {
+    "status": "proposed-defaults",
+    "window": "rolling",
+    "policies": [
+      {
+        "policy": "openapi.ip.requests.minute",
+        "subject": "ip",
+        "limit": 300,
+        "windowSeconds": 60,
+        "unit": "requests"
+      },
+      {
+        "policy": "query.token.requests.minute",
+        "subject": "token",
+        "limit": 60,
+        "windowSeconds": 60,
+        "unit": "requests"
+      },
+      {
+        "policy": "query.user.requests.minute",
+        "subject": "user",
+        "limit": 120,
+        "windowSeconds": 60,
+        "unit": "requests"
+      },
+      {
+        "policy": "query.user.accounts.minute",
+        "subject": "user",
+        "limit": 6000,
+        "windowSeconds": 60,
+        "unit": "accounts"
+      },
+      {
+        "policy": "mark.token.requests.minute",
+        "subject": "token",
+        "limit": 10,
+        "windowSeconds": 60,
+        "unit": "requests"
+      },
+      {
+        "policy": "mark.user.requests.minute",
+        "subject": "user",
+        "limit": 20,
+        "windowSeconds": 60,
+        "unit": "requests"
+      },
+      {
+        "policy": "mark.user.accounts.minute",
+        "subject": "user",
+        "limit": 200,
+        "windowSeconds": 60,
+        "unit": "accounts"
+      },
+      {
+        "policy": "mark.user.accounts.day",
+        "subject": "user",
+        "limit": 1000,
+        "windowSeconds": 86400,
+        "unit": "accounts"
+      }
+    ],
+    "description": "User budgets span all tokens and target platforms. Account units count distinct normalized (platform, username) pairs per admitted batch."
+  },
+  "x-platform-registry": {
+    "initiallyEnabled": [
+      "github"
+    ],
+    "description": "Open registry, not an enum in the wire format. Enable new platform instances only after defining username validation and canonicalization. Unknown or disabled platforms return 422 validation_failed with field code unsupported_platform.",
+    "platforms": {
+      "github": {
+        "instance": "https://github.com",
+        "usernameNormalization": "Trim whitespace, then lowercase.",
+        "usernamePatternAfterTrim": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\\[bot\\])?$"
+      }
+    }
+  }
+}
