@@ -17,7 +17,6 @@ import (
 	"github.com/41tair/slopless/pkg/data"
 	"github.com/41tair/slopless/pkg/data/ent"
 	"github.com/41tair/slopless/pkg/data/ent/idempotency"
-	"github.com/41tair/slopless/pkg/data/ent/rateevent"
 	"github.com/41tair/slopless/pkg/model"
 )
 
@@ -50,14 +49,14 @@ func openFixtureClient(database d1TestDatabase) (*ent.Client, error) {
 	return ent.NewClient(ent.Driver(driver)), nil
 }
 
-func execFixtureSQL(t *testing.T, database d1TestDatabase, query string) {
+func execFixtureSQL(t *testing.T, database d1TestDatabase, query string, args ...any) {
 	t.Helper()
 	driver, err := d1.New(database.accountID, database.databaseID, database.token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer driver.Close()
-	if err := driver.Exec(t.Context(), query, []any{}, nil); err != nil {
+	if err := driver.Exec(t.Context(), query, args, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -127,7 +126,8 @@ func TestAccountBudgets(t *testing.T) {
 
 func TestExpiredIdempotencyKeyCanBeReused(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, d1TestEndpoint(t))
+	database := d1TestEndpoint(t)
+	s := testStore(t, database)
 	identity := testIdentity(t, s)
 	input := model.MarkInput{Accounts: []model.Account{{Platform: "github", Username: "example"}}, Key: "expired-operation-key", Marked: true}
 	if _, _, err := s.Mark(t.Context(), identity, input); err != nil {
@@ -140,9 +140,13 @@ func TestExpiredIdempotencyKeyCanBeReused(t *testing.T) {
 	if time.Until(entry.ExpiresAt) < 24*time.Hour {
 		t.Fatal("retention is shorter than 24 hours")
 	}
-	if _, err := entry.Update().SetExpiresAt(time.Now().Add(-time.Hour)).Save(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(
+		t,
+		database,
+		`UPDATE "idempotencies" SET "expires_at" = ? WHERE "id" = ?`,
+		time.Now().Add(-time.Hour),
+		entry.ID,
+	)
 	input.Marked = false
 	states, replayed, err := s.Mark(t.Context(), identity, input)
 	if err != nil || replayed || states[0].Marked {
@@ -317,11 +321,13 @@ func TestRateBudgetsSharedAndDurable(t *testing.T) {
 	if !errors.As(err, &rate) || rate.RateLimit.Policy != "mark.user.requests.minute" {
 		t.Fatalf("missing shared user budget: %v", err)
 	}
-	_, err = s.client.RateEvent.Update().Where(rateevent.PolicyHasSuffix(".minute")).
-		SetExpiresAt(time.Now().Add(-time.Minute)).Save(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(
+		t,
+		database,
+		`UPDATE "rate_events" SET "expires_at" = ? WHERE "policy" LIKE ?`,
+		time.Now().Add(-time.Minute),
+		"%.minute",
+	)
 	if err := s.AdmitRequests(t.Context(), "mark", identity); err != nil {
 		t.Fatalf("expired windows still block: %v", err)
 	}
@@ -329,7 +335,8 @@ func TestRateBudgetsSharedAndDurable(t *testing.T) {
 
 func TestRateRetryUsesAllBlockingPolicies(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, d1TestEndpoint(t))
+	database := d1TestEndpoint(t)
+	s := testStore(t, database)
 	now := time.Now()
 	for i, seconds := range []int{10, 40} {
 		_, err := s.client.RateEvent.Create().SetPolicy(fmt.Sprintf("policy-%d", i)).SetSubject("subject").
@@ -348,9 +355,7 @@ func TestRateRetryUsesAllBlockingPolicies(t *testing.T) {
 	if !errors.As(err, &rate) || rate.RateLimit.Policy != "policy-1" || rate.RetryAfterSeconds < 35 {
 		t.Fatalf("wrong retry deadline: %v", err)
 	}
-	if _, err := s.client.RateEvent.Update().SetExpiresAt(now.Add(-time.Minute)).Save(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, `UPDATE "rate_events" SET "expires_at" = ?`, now.Add(-time.Minute))
 	if err := s.Cleanup(context.Background()); err != nil {
 		t.Fatal(err)
 	}

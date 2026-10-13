@@ -17,14 +17,13 @@ func (s *Service) BootstrapInvitations(ctx context.Context, count int) ([]*model
 	invites := make([]*model.Invitation, 0, count)
 	err := s.store.WithTx(ctx, func(tx *data.Store) error {
 		invites = invites[:0]
-		for range count {
-			invite, err := tx.CreateInvitation(ctx, model.Invitation{Code: newSecret("sli_")}, nil)
-			if err != nil {
-				return err
-			}
-			invites = append(invites, invite)
+		inputs := make([]model.Invitation, count)
+		for index := range inputs {
+			inputs[index].Code = newSecret("sli_")
 		}
-		return nil
+		var err error
+		invites, err = tx.CreateInvitations(ctx, inputs)
+		return err
 	})
 	if err != nil {
 		return nil, err

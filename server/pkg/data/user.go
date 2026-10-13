@@ -26,25 +26,38 @@ func userRecord(u *ent.User, err error) (*UserRecord, error) {
 }
 
 func (s *Store) User(ctx context.Context, id int) (*UserRecord, error) {
+	if s.plan != nil {
+		return s.plan.user(ctx, id)
+	}
 	return userRecord(s.client.User.Get(ctx, id))
 }
 
 func (s *Store) UserByName(ctx context.Context, name string) (*UserRecord, error) {
+	if s.plan != nil {
+		return s.plan.userByName(ctx, name)
+	}
 	return userRecord(s.client.User.Query().Where(user.UsernameEQ(name)).Only(ctx))
 }
 
 func (s *Store) CreateUser(ctx context.Context, input UserRecord) (*model.User, error) {
-	u, err := s.client.User.Create().SetUsername(input.Username).SetPasswordHash(input.PasswordHash).
-		SetNillableInvitationID(input.InvitationID).SetNillableInviterID(input.InviterID).Save(ctx)
-	result, err := userRecord(u, err)
-	if err != nil {
-		return nil, err
+	if s.plan != nil {
+		return s.plan.createUser(ctx, input)
 	}
-	return &result.User, nil
+	var result *model.User
+	err := s.WithTx(ctx, func(tx *Store) error {
+		result = nil
+		var err error
+		result, err = tx.CreateUser(ctx, input)
+		return err
+	})
+	return result, err
 }
 
 func (s *Store) SetBalance(ctx context.Context, userID int, balance int64) error {
-	return databaseError(s.client.User.UpdateOneID(userID).SetCredits(balance).Exec(ctx))
+	if s.plan != nil {
+		return s.plan.setBalance(ctx, userID, balance)
+	}
+	return s.WithTx(ctx, func(tx *Store) error { return tx.SetBalance(ctx, userID, balance) })
 }
 
 type Credential struct {
@@ -66,17 +79,32 @@ func credentialRecord(c *ent.Credential, err error) (*Credential, error) {
 }
 
 func (s *Store) CreateCredential(ctx context.Context, input Credential) (*Credential, error) {
-	return credentialRecord(s.client.Credential.Create().SetUserID(input.UserID).SetKind(credential.Kind(input.Kind)).
-		SetName(input.Name).SetSecretHash(input.SecretHash).SetExpiresAt(input.ExpiresAt).Save(ctx))
+	if s.plan != nil {
+		return s.plan.createCredential(ctx, input)
+	}
+	var result *Credential
+	err := s.WithTx(ctx, func(tx *Store) error {
+		result = nil
+		var err error
+		result, err = tx.CreateCredential(ctx, input)
+		return err
+	})
+	return result, err
 }
 
 func (s *Store) Credential(ctx context.Context, hash, kind string) (*Credential, error) {
+	if s.plan != nil {
+		return s.plan.credential(ctx, hash, kind)
+	}
 	return credentialRecord(s.client.Credential.Query().Where(
 		credential.SecretHashEQ(hash), credential.KindEQ(credential.Kind(kind)),
 	).Only(ctx))
 }
 
 func (s *Store) Tokens(ctx context.Context, userID int) ([]*model.Token, error) {
+	if s.plan != nil {
+		return s.plan.tokens(ctx, userID)
+	}
 	rows, err := s.client.Credential.Query().Where(credential.UserIDEQ(userID), credential.KindEQ(credential.KindAPI)).
 		Order(ent.Asc(credential.FieldID)).All(ctx)
 	if err != nil {
@@ -91,18 +119,15 @@ func (s *Store) Tokens(ctx context.Context, userID int) ([]*model.Token, error) 
 }
 
 func (s *Store) DeleteToken(ctx context.Context, userID, tokenID int) error {
-	count, err := s.client.Credential.Delete().Where(credential.IDEQ(tokenID), credential.UserIDEQ(userID),
-		credential.KindEQ(credential.KindAPI)).Exec(ctx)
-	if err != nil {
-		return databaseError(err)
+	if s.plan != nil {
+		return s.plan.deleteToken(ctx, userID, tokenID)
 	}
-	if count == 0 {
-		return model.ErrNotFound
-	}
-	return nil
+	return s.WithTx(ctx, func(tx *Store) error { return tx.DeleteToken(ctx, userID, tokenID) })
 }
 
 func (s *Store) DeleteSession(ctx context.Context, id int) error {
-	_, err := s.client.Credential.Delete().Where(credential.IDEQ(id), credential.KindEQ(credential.KindSession)).Exec(ctx)
-	return databaseError(err)
+	if s.plan != nil {
+		return s.plan.deleteSession(ctx, id)
+	}
+	return s.WithTx(ctx, func(tx *Store) error { return tx.DeleteSession(ctx, id) })
 }

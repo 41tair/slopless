@@ -1,0 +1,44 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "slopless-server",
+  "main": "./src/index.mjs",
+  "compatibility_date": "2026-10-13",
+  "account_id": "__CLOUDFLARE_ACCOUNT_ID__",
+  "observability": {
+    "enabled": true
+  },
+  "containers": [
+    {
+      "class_name": "ServerContainer",
+      "image": "__CONTAINER_IMAGE__",
+      "instance_type": "lite",
+      "max_instances": 1,
+      "scheduling_policy": "default"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SERVER_CONTAINER",
+        "class_name": "ServerContainer"
+      }
+    ]
+  },
+  "exports": {
+    "ServerContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "slopless",
+      "database_id": "__D1_DATABASE_ID__",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "vars": {
+    "CONTAINER_SLEEP_AFTER": "__SLEEP_AFTER__"
+  }
+}

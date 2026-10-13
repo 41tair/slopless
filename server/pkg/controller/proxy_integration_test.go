@@ -8,18 +8,20 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/41tair/slopless/pkg/data"
 	"github.com/41tair/slopless/pkg/model"
 )
 
 func TestProxyRateLimitIsolation(t *testing.T) {
 	t.Parallel()
 	routes := []struct {
-		name, path, body string
-		limit, rejected  int
+		name, path, body, policy string
+		limit                    int
 	}{
-		{name: "login", path: "/api/v1/login", body: `{"username":"bob","password":"a-test-password"}`, limit: 20, rejected: 422},
-		{name: "openapi", path: "/openapi/v1/accounts/query", body: `{"accounts":[{"platform":"github","username":"example"}]}`, limit: 300, rejected: 401},
+		{name: "login", path: "/api/v1/login", body: `{"username":"bob","password":"a-test-password"}`, policy: "auth.ip.requests.minute", limit: 20},
+		{name: "openapi", path: "/openapi/v1/accounts/query", body: `{"accounts":[{"platform":"github","username":"example"}]}`, policy: "openapi.ip.requests.minute", limit: 300},
 	}
 	proxies := []struct {
 		name     string
@@ -34,7 +36,7 @@ func TestProxyRateLimitIsolation(t *testing.T) {
 		for _, route := range routes {
 			t.Run(proxy.name+"/"+route.name, func(t *testing.T) {
 				t.Parallel()
-				svc, _ := fixture(t)
+				svc, original := fixture(t)
 				handler := NewRouter(svc, true, proxy.prefixes...)
 				invites, err := svc.BootstrapInvitations(t.Context(), 1)
 				if err != nil {
@@ -60,9 +62,20 @@ func TestProxyRateLimitIsolation(t *testing.T) {
 					handler.ServeHTTP(result, req)
 					return result
 				}
-				for range route.limit {
-					requireStatus(t, request("192.0.2.10", "{}", ""), route.rejected)
+				// Seed the exhausted window in real D1. Hundreds of REST round trips
+				// can outlast a one-minute window and test elapsed time instead of IP
+				// isolation. Request charging itself is covered by the admission tests.
+				subject := "127.0.0.1"
+				if proxy.isolated {
+					subject = "192.0.2.10"
 				}
+				if err := original.(*testHandler).store.CreateRateEvent(t.Context(), data.RateEvent{
+					Policy: route.policy, Subject: subject, Units: route.limit,
+					ExpiresAt: time.Now().Add(time.Minute),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				requireStatus(t, request("192.0.2.10", "{}", ""), http.StatusTooManyRequests)
 				// The exhausted client remains blocked even when prepending a forged IP.
 				requireStatus(t, request("203.0.113.99, 192.0.2.10", "{}", ""), http.StatusTooManyRequests)
 				want := http.StatusTooManyRequests

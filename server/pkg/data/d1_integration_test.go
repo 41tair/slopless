@@ -124,7 +124,7 @@ func execD1(t *testing.T, database d1TestDatabase, query string, args ...any) {
 	}
 }
 
-func TestD1InitializesSchemaAndPreservesDataAcrossReopen(t *testing.T) {
+func TestD1MigratedSchemaPreservesDataAcrossReopen(t *testing.T) {
 	database := newD1TestDatabase(t)
 	store, err := data.Open(
 		t.Context(), database.AccountID, database.ID, database.Token,
@@ -178,6 +178,15 @@ func TestD1InitializesSchemaAndPreservesDataAcrossReopen(t *testing.T) {
 
 	execD1(t, database, "ALTER TABLE credentials ADD COLUMN legacy_note TEXT NOT NULL DEFAULT ''")
 	execD1(t, database, "UPDATE credentials SET legacy_note = ? WHERE id = ?", "preserve-me", token.ID)
+	driver, err := d1.New(database.AccountID, database.ID, database.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	beforeOpen, err := driver.Version(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	reopened, err := data.Open(
 		t.Context(), database.AccountID, database.ID, database.Token,
@@ -186,6 +195,10 @@ func TestD1InitializesSchemaAndPreservesDataAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
+	afterOpen, err := driver.Version(t.Context())
+	if err != nil || afterOpen != beforeOpen {
+		t.Fatalf("opening a migrated store changed revision: before=%d after=%d: %v", beforeOpen, afterOpen, err)
+	}
 	reopenedService, err := service.New(reopened, config.DefaultCredits())
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +228,56 @@ func TestD1InitializesSchemaAndPreservesDataAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestD1ConcurrentOpenInitializesOnce(t *testing.T) {
+func TestBootstrapInvitationsLargeBatch(t *testing.T) {
+	database := newD1TestDatabase(t)
+	store, svc := openD1Service(t, database)
+	invites, err := svc.BootstrapInvitations(t.Context(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invites) != 1000 {
+		t.Fatalf("bootstrap invitations = %d, want 1000", len(invites))
+	}
+
+	want := make(map[string]struct{}, len(invites))
+	ids := make(map[int]struct{}, len(invites))
+	codes := make(map[string]struct{}, len(invites))
+	for _, invite := range invites {
+		if _, duplicate := ids[invite.ID]; duplicate {
+			t.Fatalf("duplicate invitation ID %d", invite.ID)
+		}
+		ids[invite.ID] = struct{}{}
+		if _, duplicate := codes[invite.Code]; duplicate {
+			t.Fatalf("duplicate invitation code %q", invite.Code)
+		}
+		codes[invite.Code] = struct{}{}
+		key := fmt.Sprintf("%d:%s", invite.ID, invite.Code)
+		want[key] = struct{}{}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := data.Open(t.Context(), database.AccountID, database.ID, database.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	persisted := queryD1Strings(
+		t,
+		database,
+		`SELECT CAST("id" AS TEXT) || ':' || "code" FROM "invitations" ORDER BY "id"`,
+	)
+	if len(persisted) != len(want) {
+		t.Fatalf("persisted invitations = %d, want %d", len(persisted), len(want))
+	}
+	for _, key := range persisted {
+		if _, ok := want[key]; !ok {
+			t.Fatalf("unexpected persisted invitation %q", key)
+		}
+	}
+}
+
+func TestD1ConcurrentOpenUsesMigratedSchema(t *testing.T) {
 	database := newD1TestDatabase(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -373,6 +435,79 @@ func TestD1TransactionRollback(t *testing.T) {
 	}
 	if _, err := store.UserByName(t.Context(), "rolled-back"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("rolled-back user lookup error = %v", err)
+	}
+}
+
+func TestD1TransactionReadsPendingAccountChanges(t *testing.T) {
+	database := newD1TestDatabase(t)
+	store, svc := openD1Service(t, database)
+	user, err := svc.CreateUser(t.Context(), "overlay-user", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := model.Account{Platform: "github", Username: "overlay-target"}
+	if err := store.CreateMark(t.Context(), user.ID, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithTx(t.Context(), func(tx *data.Store) error {
+		if err := tx.DeleteMark(t.Context(), user.ID, target); err != nil {
+			return err
+		}
+		return tx.CreateMark(t.Context(), user.ID, target)
+	}); err != nil {
+		t.Fatalf("restoring an existing mark could not commit: %v", err)
+	}
+
+	rollback := errors.New("rollback overlay verification")
+	err = store.WithTx(t.Context(), func(tx *data.Store) error {
+		if err := tx.DeleteMark(t.Context(), user.ID, target); err != nil {
+			return err
+		}
+		states, err := tx.Snapshot(t.Context(), user.ID, []model.Account{target})
+		if err != nil {
+			return err
+		}
+		if states[0].Marked || states[0].MarkedByMe || states[0].MarkCount != 0 {
+			return fmt.Errorf("pending delete is not visible: %+v", states[0])
+		}
+		if err := tx.CreateMark(t.Context(), user.ID, target); err != nil {
+			return err
+		}
+		states, err = tx.Snapshot(t.Context(), user.ID, []model.Account{target})
+		if err != nil {
+			return err
+		}
+		if !states[0].Marked || !states[0].MarkedByMe || states[0].MarkCount != 1 {
+			return fmt.Errorf("restored mark is not visible: %+v", states[0])
+		}
+		if err := tx.SetBalance(t.Context(), user.ID, 7); err != nil {
+			return err
+		}
+		if err := tx.CreateCreditEntry(t.Context(), data.CreditRecord{
+			UserID: user.ID, Amount: 7, BalanceAfter: 7, Reason: "first_mark",
+		}); err != nil {
+			return err
+		}
+		credits, err := tx.Credits(t.Context(), user.ID, model.Page{Limit: 10})
+		if err != nil {
+			return err
+		}
+		if credits.Balance != 7 || len(credits.Entries) != 1 || credits.Entries[0].Amount != 7 {
+			return fmt.Errorf("pending credit is not visible: %+v", credits)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatalf("transaction error = %v, want rollback marker", err)
+	}
+
+	states, err := store.Snapshot(t.Context(), user.ID, []model.Account{target})
+	if err != nil || !states[0].Marked || states[0].MarkCount != 1 {
+		t.Fatalf("rollback changed mark: %+v, %v", states, err)
+	}
+	credits, err := store.Credits(t.Context(), user.ID, model.Page{Limit: 10})
+	if err != nil || credits.Balance != 0 || len(credits.Entries) != 0 {
+		t.Fatalf("rollback changed credits: %+v, %v", credits, err)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/41tair/slopless/pkg/config"
+	"github.com/41tair/slopless/pkg/d1"
 	"github.com/41tair/slopless/pkg/d1/d1test"
 	"github.com/41tair/slopless/pkg/data"
 	"github.com/41tair/slopless/pkg/model"
@@ -174,7 +175,10 @@ func issueToken(t *testing.T, handler http.Handler, cookie *http.Cookie) issuedT
 
 func rateUnits(t *testing.T, store *data.Store, policy string, subject int) int {
 	t.Helper()
-	events, err := store.RateEvents(t.Context(), policy, fmt.Sprint(subject), time.Now())
+	// These assertions measure persisted charges, including expired events. Real
+	// REST round trips may cross a rolling window while checking replay behavior.
+	// Admission and expiry are verified separately with fresh budget fixtures.
+	events, err := store.RateEvents(t.Context(), policy, fmt.Sprint(subject), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,18 +335,45 @@ func TestOpenAPIRequestAdmissionOrderingAndSharing(t *testing.T) {
 		})
 	}
 	invalid.token = first.Secret
-	for range 7 {
-		requireStatus(t, perform(handler, invalid), http.StatusBadRequest)
+	if got := rateUnits(t, testServer.store, "mark.token.requests.minute", first.ID); got != 3 {
+		t.Fatalf("invalid authenticated requests charged %d token units, want 3", got)
 	}
-	if got := rateUnits(t, testServer.store, "mark.token.requests.minute", first.ID); got != 10 {
-		t.Fatalf("invalid authenticated requests charged %d token units, want 10", got)
-	}
-	if got := rateUnits(t, testServer.store, "mark.user.requests.minute", identity.UserID); got != 10 {
-		t.Fatalf("invalid authenticated requests charged %d user units, want 10", got)
+	if got := rateUnits(t, testServer.store, "mark.user.requests.minute", identity.UserID); got != 3 {
+		t.Fatalf("invalid authenticated requests charged %d user units, want 3", got)
 	}
 	if got := rateUnits(t, testServer.store, "mark.user.accounts.minute", identity.UserID); got != 0 {
 		t.Fatalf("invalid requests charged %d account units", got)
 	}
+	// The HTTP requests above prove charging and ordering. Seed the rest of the
+	// boundary in real D1 so REST latency cannot outlast the rolling window.
+	driver, err := d1.New(testServer.accountID, testServer.databaseID, testServer.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := driver.Exec(t.Context(), `UPDATE "rate_events" SET "expires_at" = ?
+		WHERE "policy" IN ('mark.token.requests.minute', 'mark.user.requests.minute')`,
+		[]any{time.Now().Add(time.Minute)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	seedBudget := func(store *data.Store, tokenID, units int) {
+		t.Helper()
+		err := store.WithTx(t.Context(), func(tx *data.Store) error {
+			for _, event := range []data.RateEvent{
+				{Policy: "mark.token.requests.minute", Subject: fmt.Sprint(tokenID), Units: units, ExpiresAt: time.Now().Add(time.Minute)},
+				{Policy: "mark.user.requests.minute", Subject: fmt.Sprint(identity.UserID), Units: units, ExpiresAt: time.Now().Add(time.Minute)},
+			} {
+				if err := tx.CreateRateEvent(t.Context(), event); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedBudget(testServer.store, first.ID, 7)
 	blocked := perform(handler, testRequest{
 		path: "/openapi/v1/accounts/mark", token: first.Secret, key: "blocked-request-key",
 		body: `{"accounts":[{"platform":"github","username":"blocked"}],"marked":true}`,
@@ -365,9 +396,8 @@ func TestOpenAPIRequestAdmissionOrderingAndSharing(t *testing.T) {
 	}
 	secondHandler := NewRouter(secondService, true)
 	invalid.token = second.Secret
-	for range 10 {
-		requireStatus(t, perform(secondHandler, invalid), http.StatusBadRequest)
-	}
+	requireStatus(t, perform(secondHandler, invalid), http.StatusBadRequest)
+	seedBudget(secondStore, second.ID, 9)
 	if err := secondStore.Close(); err != nil {
 		t.Fatal(err)
 	}

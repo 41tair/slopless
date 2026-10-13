@@ -11,16 +11,19 @@ import (
 
 func invitationInfo(invite *ent.Invitation) *model.Invitation {
 	result := &model.Invitation{
-		ID: invite.ID, Code: invite.Code, IssuerID: invite.IssuerID, Cost: invite.Cost,
-		CreatedAt: invite.CreatedAt, UsedAt: invite.UsedAt,
+		ID: invite.ID, Code: invite.Code, IssuerID: cloneInt(invite.IssuerID), Cost: invite.Cost,
+		CreatedAt: invite.CreatedAt, UsedAt: cloneTime(invite.UsedAt),
 	}
 	if invite.Edges.Redeemer != nil {
-		result.RedeemerID = &invite.Edges.Redeemer.ID
+		result.RedeemerID = cloneInt(&invite.Edges.Redeemer.ID)
 	}
 	return result
 }
 
 func (s *Store) Invitations(ctx context.Context, userID int, page model.Page) ([]*model.Invitation, int, error) {
+	if s.plan != nil {
+		return s.plan.invitations(ctx, userID, page)
+	}
 	query := s.client.Invitation.Query().Where(invitation.IssuerIDEQ(userID)).WithRedeemer().
 		Order(ent.Desc(invitation.FieldID)).Limit(page.Limit + 1)
 	if page.Before > 0 {
@@ -43,7 +46,10 @@ func (s *Store) Invitations(ctx context.Context, userID int, page model.Page) ([
 }
 
 func (s *Store) InvitationByCode(ctx context.Context, code string) (*model.Invitation, error) {
-	row, err := s.client.Invitation.Query().Where(invitation.CodeEQ(code)).Only(ctx)
+	if s.plan != nil {
+		return s.plan.invitationByCode(ctx, code)
+	}
+	row, err := s.client.Invitation.Query().Where(invitation.CodeEQ(code)).WithRedeemer().Only(ctx)
 	if err != nil {
 		return nil, databaseError(err)
 	}
@@ -51,6 +57,9 @@ func (s *Store) InvitationByCode(ctx context.Context, code string) (*model.Invit
 }
 
 func (s *Store) InvitationByPurchase(ctx context.Context, userID int, key string) (*model.Invitation, error) {
+	if s.plan != nil {
+		return s.plan.invitationByPurchase(ctx, userID, key)
+	}
 	row, err := s.client.Invitation.Query().Where(invitation.IssuerIDEQ(userID), invitation.PurchaseKeyEQ(key)).
 		WithRedeemer().Only(ctx)
 	if err != nil {
@@ -60,14 +69,40 @@ func (s *Store) InvitationByPurchase(ctx context.Context, userID int, key string
 }
 
 func (s *Store) CreateInvitation(ctx context.Context, input model.Invitation, key *string) (*model.Invitation, error) {
-	row, err := s.client.Invitation.Create().SetCode(input.Code).SetNillableIssuerID(input.IssuerID).
-		SetNillablePurchaseKey(key).SetCost(input.Cost).Save(ctx)
-	if err != nil {
-		return nil, databaseError(err)
+	if s.plan != nil {
+		return s.plan.createInvitation(ctx, input, key)
 	}
-	return invitationInfo(row), nil
+	var result *model.Invitation
+	err := s.WithTx(ctx, func(tx *Store) error {
+		result = nil
+		var err error
+		result, err = tx.CreateInvitation(ctx, input, key)
+		return err
+	})
+	return result, err
+}
+
+// CreateInvitations creates invitations with the default empty purchase key.
+func (s *Store) CreateInvitations(ctx context.Context, inputs []model.Invitation) ([]*model.Invitation, error) {
+	if s.plan != nil {
+		return s.plan.createInvitations(ctx, inputs)
+	}
+	if len(inputs) == 0 {
+		return []*model.Invitation{}, nil
+	}
+	var result []*model.Invitation
+	err := s.WithTx(ctx, func(tx *Store) error {
+		result = nil
+		var err error
+		result, err = tx.CreateInvitations(ctx, inputs)
+		return err
+	})
+	return result, err
 }
 
 func (s *Store) ConsumeInvitation(ctx context.Context, id int, at time.Time) error {
-	return databaseError(s.client.Invitation.UpdateOneID(id).SetUsedAt(at).Exec(ctx))
+	if s.plan != nil {
+		return s.plan.consumeInvitation(ctx, id, at)
+	}
+	return s.WithTx(ctx, func(tx *Store) error { return tx.ConsumeInvitation(ctx, id, at) })
 }

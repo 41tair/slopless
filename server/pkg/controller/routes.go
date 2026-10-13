@@ -21,6 +21,9 @@ type Controller struct {
 func NewRouter(svc *service.Service, secureCookies bool, trustedProxies ...netip.Prefix) http.Handler {
 	h := &Controller{service: svc, secureCookies: secureCookies, trustedProxies: slices.Clone(trustedProxies)}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	web := NewGroup("api/v1", mux)
 	web.NewHandler(
 		"POST",

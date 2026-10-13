@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/41tair/slopless/pkg/config"
+	"github.com/41tair/slopless/pkg/d1"
 	"github.com/41tair/slopless/pkg/data/ent/account"
 	"github.com/41tair/slopless/pkg/data/ent/confirmation"
 	"github.com/41tair/slopless/pkg/data/ent/invitation"
+	"github.com/41tair/slopless/pkg/data/schema"
 	"github.com/41tair/slopless/pkg/model"
 )
 
@@ -370,6 +372,18 @@ func TestMigrationPreservesLegacyMarksWithoutRetroactiveRewards(t *testing.T) {
 	if err := legacyStore.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Simulate a pre-migration database. Releases apply the migration explicitly;
+	// reopening the application no longer performs schema writes or backfills.
+	execFixtureSQL(t, database, `DELETE FROM "__slopless_schema"`)
+	driver, err := d1.New(database.accountID, database.databaseID, database.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Apply(t.Context(), driver); err != nil {
+		_ = driver.Close()
+		t.Fatal(err)
+	}
+	_ = driver.Close()
 	s := testStore(t, database)
 	newcomer := creditUser(t, s, "newcomer", 0)
 	targets := []model.Account{{Platform: "github", Username: "old-target"}}

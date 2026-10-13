@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/41tair/slopless/pkg/d1"
+	dataschema "github.com/41tair/slopless/pkg/data/schema"
 	"github.com/google/uuid"
 )
 
@@ -103,12 +105,21 @@ func New(t *testing.T) Database {
 		}
 	})
 
-	return Database{
+	database := Database{
 		ID:        created.Result.UUID,
 		AccountID: accountID,
 		Endpoint:  databaseURL + "/query",
 		Token:     token,
 	}
+	driver, err := d1.New(database.AccountID, database.ID, database.Token)
+	if err != nil {
+		t.Fatalf("open isolated D1 database: %v", err)
+	}
+	defer driver.Close()
+	if err := dataschema.Apply(t.Context(), driver); err != nil {
+		t.Fatalf("initialize isolated D1 database: %v", err)
+	}
+	return database
 }
 
 func newRequest(ctx context.Context, method, endpoint, token string, body []byte) (*http.Request, error) {

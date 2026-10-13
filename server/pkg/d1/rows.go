@@ -2,7 +2,6 @@ package d1
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -11,42 +10,21 @@ import (
 
 type bufferedRows struct {
 	columns []string
-	types   []*sql.ColumnType
 	rows    [][]any
 	index   int
 	current []any
 	closed  bool
-	err     error
 }
 
-func bufferRows(rows *sql.Rows) (*bufferedRows, error) {
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, errors.Join(err, rows.Close())
-	}
-	types, err := rows.ColumnTypes()
-	if err != nil {
-		return nil, errors.Join(err, rows.Close())
-	}
-	result := &bufferedRows{columns: columns, types: types}
-	for rows.Next() {
-		values := make([]any, len(columns))
-		destinations := make([]any, len(columns))
-		for i := range values {
-			destinations[i] = &values[i]
+func newBufferedRows(result Result) *bufferedRows {
+	rows := make([][]any, len(result.Rows))
+	for i, row := range result.Rows {
+		rows[i] = make([]any, len(row))
+		for j, value := range row {
+			rows[i][j] = cloneValue(value)
 		}
-		if err := rows.Scan(destinations...); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		for i, value := range values {
-			values[i] = cloneValue(value)
-		}
-		result.rows = append(result.rows, values)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return &bufferedRows{columns: append([]string(nil), result.Columns...), rows: rows}
 }
 
 func cloneValue(value any) any {
@@ -70,11 +48,11 @@ func (r *bufferedRows) Columns() ([]string, error) {
 	return append([]string(nil), r.columns...), nil
 }
 
-func (r *bufferedRows) ColumnTypes() ([]*sql.ColumnType, error) {
-	return append([]*sql.ColumnType(nil), r.types...), nil
-}
+// D1 does not expose SQLite declared types with query results. Ent falls back
+// to scanning unknown column types into *any when this slice is empty.
+func (*bufferedRows) ColumnTypes() ([]*sql.ColumnType, error) { return nil, nil }
 
-func (r *bufferedRows) Err() error { return r.err }
+func (*bufferedRows) Err() error { return nil }
 
 func (r *bufferedRows) Next() bool {
 	if r.closed || r.index >= len(r.rows) {
@@ -86,7 +64,7 @@ func (r *bufferedRows) Next() bool {
 	return true
 }
 
-func (r *bufferedRows) NextResultSet() bool { return false }
+func (*bufferedRows) NextResultSet() bool { return false }
 
 func (r *bufferedRows) Scan(destinations ...any) error {
 	if r.current == nil {
@@ -107,19 +85,19 @@ func assignValue(destination, source any) error {
 	if destination == nil {
 		return fmt.Errorf("destination is nil")
 	}
-	if scanner, ok := destination.(sql.Scanner); ok {
-		if nullTime, ok := destination.(*sql.NullTime); ok {
-			value, err := scanTime(source)
-			if err != nil {
-				return err
-			}
-			if source == nil {
-				*nullTime = sql.NullTime{}
-			} else {
-				*nullTime = sql.NullTime{Time: value, Valid: true}
-			}
-			return nil
+	if nullTime, ok := destination.(*sql.NullTime); ok {
+		value, err := scanTime(source)
+		if err != nil {
+			return err
 		}
+		if source == nil {
+			*nullTime = sql.NullTime{}
+		} else {
+			*nullTime = sql.NullTime{Time: value, Valid: true}
+		}
+		return nil
+	}
+	if scanner, ok := destination.(sql.Scanner); ok {
 		return scanner.Scan(cloneValue(source))
 	}
 	value := reflect.ValueOf(destination)

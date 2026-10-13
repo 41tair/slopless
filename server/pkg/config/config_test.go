@@ -10,6 +10,15 @@ import (
 
 const validData = "data:\n  account_id: account-id\n  database_id: database-id\n  token_env: CLOUDFLARE_API_KEY\n"
 
+func noEnvironment(string) (string, bool) { return "", false }
+
+func environment(values map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok
+	}
+}
+
 func TestDataConfiguration(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -24,6 +33,9 @@ func TestDataConfiguration(t *testing.T) {
 		{name: "empty database ID", data: "data:\n  account_id: account-id\n  database_id: '   '\n  token_env: CLOUDFLARE_API_KEY\n"},
 		{name: "missing token environment", data: "data:\n  account_id: account-id\n  database_id: database-id\n"},
 		{name: "D1 REST", data: validData, valid: true},
+		{name: "explicit D1 REST", data: "data:\n  transport: rest\n  account_id: account-id\n  database_id: database-id\n  token_env: CLOUDFLARE_API_KEY\n", valid: true},
+		{name: "D1 binding", data: "data:\n  transport: binding\n", valid: true},
+		{name: "unknown transport", data: "data:\n  transport: tunnel\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -32,7 +44,7 @@ func TestDataConfiguration(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := ParseConfig(path)
+			_, err := parseConfig(path, noEnvironment)
 			if (err == nil) != tt.valid {
 				t.Fatalf("ParseConfig error = %v, valid = %v", err, tt.valid)
 			}
@@ -63,7 +75,7 @@ func TestCreditConfiguration(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			conf, err := ParseConfig(path)
+			conf, err := parseConfig(path, noEnvironment)
 			if (err == nil) != tt.valid {
 				t.Fatalf("ParseConfig error = %v, valid = %v", err, tt.valid)
 			}
@@ -103,7 +115,7 @@ func TestTrustedProxyConfiguration(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
-			conf, err := ParseConfig(path)
+			conf, err := parseConfig(path, noEnvironment)
 			if tt.invalid {
 				if err == nil || !strings.Contains(err.Error(), "server.trusted_proxies") {
 					t.Fatalf("invalid trusted proxies returned %v", err)
@@ -123,6 +135,127 @@ func TestTrustedProxyConfiguration(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("prefixes = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnvironmentOverrides(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		server         string
+		data           string
+		env            map[string]string
+		wantTransport  DataTransport
+		wantAccountID  string
+		wantDatabaseID string
+		wantSecure     bool
+		wantProxies    []string
+		wantError      string
+	}{
+		{
+			name:   "Cloudflare binding",
+			server: "server:\n  addr: ':8090'\n",
+			data:   validData,
+			env: map[string]string{
+				"D1_TRANSPORT":           " binding ",
+				"CLOUDFLARE_ACCOUNT_ID":  "",
+				"CLOUDFLARE_DATABASE_ID": "",
+				"SERVER_SECURE_COOKIES":  "true",
+				"SERVER_TRUSTED_PROXIES": "0.0.0.0/0, ::/0",
+			},
+			wantTransport: DataTransportBinding,
+			wantSecure:    true,
+			wantProxies:   []string{"0.0.0.0/0", "::/0"},
+		},
+		{
+			name:   "REST identifiers",
+			server: "server:\n  addr: ':8090'\n  secure_cookies: true\n  trusted_proxies: [127.0.0.1]\n",
+			data:   validData,
+			env: map[string]string{
+				"CLOUDFLARE_ACCOUNT_ID":  "production-account",
+				"CLOUDFLARE_DATABASE_ID": "production-database",
+				"SERVER_SECURE_COOKIES":  "false",
+				"SERVER_TRUSTED_PROXIES": "",
+			},
+			wantTransport:  DataTransportREST,
+			wantAccountID:  "production-account",
+			wantDatabaseID: "production-database",
+			wantProxies:    []string{},
+		},
+		{
+			name:   "canonical D1 database identifier wins",
+			server: "server:\n  addr: ':8090'\n",
+			data:   validData,
+			env: map[string]string{
+				"CLOUDFLARE_D1_DATABASE_ID": "canonical-database",
+				"CLOUDFLARE_DATABASE_ID":    "legacy-database",
+			},
+			wantTransport:  DataTransportREST,
+			wantAccountID:  "account-id",
+			wantDatabaseID: "canonical-database",
+		},
+		{
+			name:      "invalid transport",
+			server:    "server:\n  addr: ':8090'\n",
+			data:      validData,
+			env:       map[string]string{"D1_TRANSPORT": "tunnel"},
+			wantError: "data.transport",
+		},
+		{
+			name:      "empty REST account",
+			server:    "server:\n  addr: ':8090'\n",
+			data:      validData,
+			env:       map[string]string{"CLOUDFLARE_ACCOUNT_ID": ""},
+			wantError: "data.account_id",
+		},
+		{
+			name:      "invalid secure cookies",
+			server:    "server:\n  addr: ':8090'\n",
+			data:      validData,
+			env:       map[string]string{"SERVER_SECURE_COOKIES": "sometimes"},
+			wantError: "SERVER_SECURE_COOKIES",
+		},
+		{
+			name:      "invalid trusted proxy",
+			server:    "server:\n  addr: ':8090'\n",
+			data:      validData,
+			env:       map[string]string{"SERVER_TRUSTED_PROXIES": "127.0.0.1,localhost"},
+			wantError: "server.trusted_proxies",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.server+tt.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			conf, err := parseConfig(path, environment(tt.env))
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("parseConfig error = %v, want error containing %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conf.Data.Transport != tt.wantTransport {
+				t.Errorf("transport = %q, want %q", conf.Data.Transport, tt.wantTransport)
+			}
+			if conf.Data.AccountID != tt.wantAccountID {
+				t.Errorf("account ID = %q, want %q", conf.Data.AccountID, tt.wantAccountID)
+			}
+			if conf.Data.DatabaseID != tt.wantDatabaseID {
+				t.Errorf("database ID = %q, want %q", conf.Data.DatabaseID, tt.wantDatabaseID)
+			}
+			if conf.Server.SecureCookies != tt.wantSecure {
+				t.Errorf("secure cookies = %t, want %t", conf.Server.SecureCookies, tt.wantSecure)
+			}
+			if !reflect.DeepEqual(conf.Server.TrustedProxies, tt.wantProxies) {
+				t.Errorf("trusted proxies = %v, want %v", conf.Server.TrustedProxies, tt.wantProxies)
 			}
 		})
 	}

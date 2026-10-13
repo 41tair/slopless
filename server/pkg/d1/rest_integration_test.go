@@ -1,141 +1,116 @@
 //go:build integration
 
-package d1
+package d1_test
 
 import (
 	"bytes"
-	"encoding/json"
-	"io"
-	"net/http"
 	"testing"
 
+	"github.com/41tair/slopless/pkg/d1"
 	"github.com/41tair/slopless/pkg/d1/d1test"
 )
 
-func TestRESTBatchRollsBackOnConstraintFailure(t *testing.T) {
+func testDriver(t *testing.T) (*d1.Driver, d1test.Database) {
+	t.Helper()
 	database := d1test.New(t)
-	client, err := newClient(database.Endpoint, database.Token)
+	driver, err := d1.New(database.AccountID, database.ID, database.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.query(t.Context(), []statement{
+	t.Cleanup(func() { _ = driver.Close() })
+	return driver, database
+}
+
+func TestRESTBatchRollsBackOnConstraintFailure(t *testing.T) {
+	driver, _ := testDriver(t)
+	if _, err := driver.Batch(t.Context(), []d1.Statement{
 		{SQL: "CREATE TABLE probe (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"},
 		{SQL: "INSERT INTO probe VALUES (?, ?)", Params: []any{1, "persisted"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.query(t.Context(), []statement{
+	if _, err := driver.Batch(t.Context(), []d1.Statement{
 		{SQL: "INSERT INTO probe VALUES (?, ?)", Params: []any{2, "must roll back"}},
 		{SQL: "INSERT INTO probe VALUES (?, ?)", Params: []any{3, nil}},
-	}); err == nil {
-		t.Fatal("batch with a NOT NULL violation succeeded")
+	}); err == nil || !d1.IsConstraintError(err) {
+		t.Fatalf("batch error = %v, want constraint", err)
 	}
-	results, err := client.query(t.Context(), []statement{{SQL: "SELECT id FROM probe ORDER BY id"}})
+	result, err := driver.Read(t.Context(), d1.Statement{SQL: "SELECT id FROM probe ORDER BY id"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results[0].Results) != 1 {
-		t.Fatalf("failed batch retained rows: %v", results[0].Results)
-	}
-	var id int
-	if err := json.Unmarshal(results[0].Results[0]["id"], &id); err != nil {
-		t.Fatal(err)
-	}
-	if id != 1 {
-		t.Fatalf("persisted row ID = %d, want 1", id)
+	if len(result.Rows) != 1 || result.Rows[0][0] != int64(1) {
+		t.Fatalf("failed batch retained rows: %+v", result.Rows)
 	}
 }
 
-type loseResponseTransport struct {
-	transport http.RoundTripper
-	lost      bool
-}
-
-func (t *loseResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	response, err := t.transport.RoundTrip(request)
-	if err == nil && !t.lost && response.StatusCode == http.StatusOK {
-		t.lost = true
-		_ = response.Body.Close()
-		return nil, io.ErrUnexpectedEOF
-	}
-	return response, err
-}
-
-func TestRESTCommitResolvesLostResponse(t *testing.T) {
-	database := d1test.New(t)
-	client, err := newClient(database.Endpoint, database.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, err := client.snapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := &loseResponseTransport{transport: http.DefaultTransport}
-	client.http.Transport = transport
-	if err := client.commit(t.Context(), commitRequest{
-		Version: before.Version, TxID: "lost-response",
-		DDL: []string{"CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !transport.lost {
-		t.Fatal("test did not lose the actual D1 commit response")
-	}
-	after, err := client.snapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Version != before.Version+1 || len(after.Tables) != 1 {
-		t.Fatal("lost response caused a duplicate or missing commit")
-	}
-}
-
-func TestRESTSnapshotAndCommitPreserveScalars(t *testing.T) {
-	database := d1test.New(t)
-	client, err := newClient(database.Endpoint, database.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.query(t.Context(), []statement{{
-		SQL: "CREATE TABLE users (id INTEGER PRIMARY KEY, text TEXT, payload BLOB, number INTEGER, optional TEXT)",
+func TestRESTRawPreservesEmptyColumnsAndScalars(t *testing.T) {
+	driver, _ := testDriver(t)
+	if _, err := driver.Batch(t.Context(), []d1.Statement{{
+		SQL: "CREATE TABLE raw_probe (id INTEGER PRIMARY KEY, text TEXT, payload BLOB, optional TEXT)",
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	before, err := client.snapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := "quote '; and embedded \x00 byte"
 	payload := []byte{0, 1, 127, 255}
-	number := maxSafeInteger - 1
-	if err := client.commit(t.Context(), commitRequest{
-		Version: before.Version,
-		TxID:    "scalar-round-trip",
-		Changes: []change{{
-			Table:      "users",
-			Columns:    []string{"id", "text", "payload", "number", "optional"},
-			PrimaryKey: []string{"id"},
-			Rows: [][]scalar{{
-				{Value: int64(1)}, {Value: text}, {Value: payload}, {Value: number}, {Value: nil},
-			}},
-		}},
-	}); err != nil {
+	if _, err := driver.Batch(t.Context(), []d1.Statement{{
+		SQL:    "INSERT INTO raw_probe (id, text, payload, optional) VALUES (?, ?, ?, ?)",
+		Params: []any{1, "quote '; and NUL \x00", payload, nil},
+	}}); err != nil {
 		t.Fatal(err)
 	}
-	after, err := client.snapshot(t.Context())
+	result, err := driver.Read(t.Context(), d1.Statement{
+		SQL:    "SELECT id, text, payload, optional FROM raw_probe WHERE id = ?",
+		Params: []any{1},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Version != before.Version+1 || len(after.Tables) != 1 || len(after.Tables[0].Rows) != 1 {
-		t.Fatal("commit did not persist one row and advance the revision")
+	if !equalStrings(result.Columns, []string{"id", "text", "payload", "optional"}) || len(result.Rows) != 1 {
+		t.Fatalf("result = %+v", result)
 	}
-	row := after.Tables[0].Rows[0]
-	if row[0].Value != int64(1) || row[1].Value != text || row[3].Value != number || row[4].Value != nil {
-		t.Fatalf("scalar values changed during REST round trip: %v", row)
+	if got, ok := result.Rows[0][2].([]byte); !ok || !bytes.Equal(got, payload) {
+		t.Fatalf("BLOB = %#v", result.Rows[0][2])
 	}
-	gotPayload, ok := row[2].Value.([]byte)
-	if !ok || !bytes.Equal(gotPayload, payload) {
-		t.Fatalf("BLOB = %v, want %v", row[2].Value, payload)
+	empty, err := driver.Read(t.Context(), d1.Statement{SQL: "SELECT id, text FROM raw_probe WHERE false"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if !equalStrings(empty.Columns, []string{"id", "text"}) || len(empty.Rows) != 0 {
+		t.Fatalf("empty result = %+v", empty)
+	}
+}
+
+func TestRESTNextIDIsAtomicAndDoesNotAdvanceVersion(t *testing.T) {
+	driver, _ := testDriver(t)
+	before, err := driver.Version(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := driver.NextID(t.Context(), "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := driver.NextID(t.Context(), "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := driver.Version(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != 1 || second != 2 || after != before {
+		t.Fatalf("IDs = %d,%d; versions = %d,%d", first, second, before, after)
+	}
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }

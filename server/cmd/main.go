@@ -85,15 +85,22 @@ func closeStore(store *data.Store, operation string) {
 	}
 }
 
-func bootstrapInvitations(conf *config.Config, count int) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	store, err := data.Open(
+func openStore(ctx context.Context, conf *config.Config) (*data.Store, error) {
+	if conf.Data.Transport == config.DataTransportBinding {
+		return data.OpenBinding(ctx)
+	}
+	return data.Open(
 		ctx,
 		conf.Data.AccountID,
 		conf.Data.DatabaseID,
 		os.Getenv(conf.Data.TokenEnv),
 	)
+}
+
+func bootstrapInvitations(conf *config.Config, count int) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	store, err := openStore(ctx, conf)
 	if err != nil {
 		return err
 	}
@@ -118,12 +125,7 @@ func createUser(conf *config.Config, username string) error {
 	password = strings.TrimSuffix(strings.TrimSuffix(password, "\n"), "\r")
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	store, err := data.Open(
-		ctx,
-		conf.Data.AccountID,
-		conf.Data.DatabaseID,
-		os.Getenv(conf.Data.TokenEnv),
-	)
+	store, err := openStore(ctx, conf)
 	if err != nil {
 		return err
 	}
@@ -149,12 +151,7 @@ func runServer(conf *config.Config) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	store, err := data.Open(
-		ctx,
-		conf.Data.AccountID,
-		conf.Data.DatabaseID,
-		os.Getenv(conf.Data.TokenEnv),
-	)
+	store, err := openStore(ctx, conf)
 	if err != nil {
 		return err
 	}
