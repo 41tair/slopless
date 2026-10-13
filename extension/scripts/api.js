@@ -157,7 +157,7 @@ export function createAccountService({ storage, fetch: fetcher = globalThis.fetc
     if (response.status !== 200) {
       const retryable = response.status === 429 || response.status >= 500 || (response.status === 409 && body?.code === "idempotency_in_progress");
       const message = response.status === 401 ? "The API token is invalid or expired. Update it in Settings."
-        : response.status === 403 ? "The API token does not have permission for this operation."
+        : response.status === 403 ? "The API request was forbidden."
         : response.status === 429 ? "API rate limit reached. Try again after the cooldown."
         : response.status === 409 ? "The previous mark is still being resolved. Check its status before trying again."
         : `The API request failed (${response.status}).`;

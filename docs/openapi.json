@@ -30,9 +30,6 @@
         "tags": [
           "Accounts"
         ],
-        "x-required-scopes": [
-          "accounts:read"
-        ],
         "x-max-body-bytes": 16384,
         "requestBody": {
           "required": true,
@@ -99,9 +96,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
           "413": {
             "$ref": "#/components/responses/TooLarge"
           },
@@ -127,12 +121,9 @@
       "post": {
         "operationId": "markAccounts",
         "summary": "Set the current user's mark state for multiple platform accounts",
-        "description": "Atomic desired-state mutation across all requested platform accounts. The same username on different platforms is a different account. Multiple tokens for one Slopless user count once per platform account. False withdraws only the caller's mark. Repeating the desired state does not increment counts. Completed idempotency results are retained for at least 24 hours; matching replays preserve the original data. A replay reflects the original operation rather than current account state. On Idempotency-Replayed: true, query current state before refreshing the local account cache.",
+        "description": "Atomic desired-state mutation across all requested platform accounts. This service assumes a small community of trusted users; one active mark is sufficient for the global marked state. The same username on different platforms is a different account. Multiple tokens for one Slopless user count once per platform account. Marking validates platform-specific username format and normalization without verifying upstream existence. False withdraws only the caller's mark. Repeating the desired state does not increment counts. Completed idempotency results are retained for at least 24 hours; matching replays preserve the original data. A replay reflects the original operation rather than current account state. On Idempotency-Replayed: true, query current state before refreshing the local account cache.",
         "tags": [
           "Accounts"
-        ],
-        "x-required-scopes": [
-          "marks:write"
         ],
         "x-max-body-bytes": 16384,
         "requestBody": {
@@ -204,9 +195,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
           "409": {
             "$ref": "#/components/responses/Conflict"
           },
@@ -253,7 +241,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "Slopless API token",
-        "description": "Opaque token belonging to a Slopless user, independent of the marked account platform. Query requires accounts:read; mark requires marks:write. Cookie authentication is not accepted."
+        "description": "Opaque token belonging to a Slopless user, independent of the marked account platform. Every valid API token can query and mark accounts. Cookie authentication is not accepted."
       }
     },
     "headers": {
@@ -282,7 +270,7 @@
         }
       },
       "Authenticate": {
-        "description": "Bearer challenge. Includes invalid_token for invalid credentials, or insufficient_scope and scope for scope failures.",
+        "description": "Bearer challenge. Includes invalid_token for invalid, expired, or revoked credentials.",
         "required": true,
         "schema": {
           "type": "string"
@@ -317,27 +305,6 @@
       },
       "Unauthorized": {
         "description": "Missing, invalid, expired, or revoked API token.",
-        "headers": {
-          "X-Request-Id": {
-            "$ref": "#/components/headers/RequestId"
-          },
-          "Cache-Control": {
-            "$ref": "#/components/headers/CacheControl"
-          },
-          "WWW-Authenticate": {
-            "$ref": "#/components/headers/Authenticate"
-          }
-        },
-        "content": {
-          "application/problem+json": {
-            "schema": {
-              "$ref": "#/components/schemas/Problem"
-            }
-          }
-        }
-      },
-      "Forbidden": {
-        "description": "The token does not grant the required scope.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -419,7 +386,7 @@
         }
       },
       "ValidationFailed": {
-        "description": "Invalid request fields, unsupported platform, invalid platform-specific username, or batch size. The whole batch is rejected; no writes occur.",
+        "description": "Invalid request fields, unsupported platform, invalid platform-specific username, or batch size. The whole batch is rejected; no mark changes occur.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -451,7 +418,7 @@
         }
       },
       "RateLimited": {
-        "description": "At least one rate policy rejects the batch. No mark side effects. Retry-After accounts for all currently blocking policies.",
+        "description": "At least one rate policy rejects the batch. No mark side effects. Retry-After accounts for all currently blocking policies in the rejecting admission stage.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -944,7 +911,7 @@
         "unit": "accounts"
       }
     ],
-    "description": "User budgets span all tokens and target platforms. Account units count distinct normalized (platform, username) pairs per admitted batch."
+    "description": "IP request policies run before token authentication and body processing. Token and user request policies run after successful authentication but before idempotency and body validation; their counters commit independently, so every attempt admitted by these request policies counts even if it is later rejected by idempotency or body validation, an account-unit limit, or business logic. User budgets span all tokens and target platforms. Account work units count distinct normalized (platform, username) pairs and are charged inside the operation transaction, so they roll back with failed business work. A matching idempotency replay still counts its normalized account units."
   },
   "x-platform-registry": {
     "initiallyEnabled": [
