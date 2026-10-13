@@ -3,8 +3,9 @@ server:
   secure_cookies: false # Set true when serving over HTTPS.
   trusted_proxies: [] # Set to the IPs/CIDRs of proxies that supply X-Forwarded-For.
 data:
-#  dsn: ""
-  dsn: "postgresql://postgres:difyai123456@192.168.0.200:5432/slopless?sslmode=disable"
+  account_id: "replace-with-account-id"
+  database_id: "replace-with-database-id"
+  token_env: "CLOUDFLARE_API_KEY"
 credits:
   first_mark_reward: 10
   invitation_rewards: [2, 1]

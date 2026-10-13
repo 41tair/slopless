@@ -4,61 +4,35 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"entgo.io/ent/dialect"
-	entsql "entgo.io/ent/dialect/sql"
 	"github.com/41tair/slopless/pkg/config"
+	"github.com/41tair/slopless/pkg/d1"
+	"github.com/41tair/slopless/pkg/d1/d1test"
 	"github.com/41tair/slopless/pkg/data"
 	"github.com/41tair/slopless/pkg/data/ent"
 	"github.com/41tair/slopless/pkg/data/ent/idempotency"
 	"github.com/41tair/slopless/pkg/data/ent/rateevent"
 	"github.com/41tair/slopless/pkg/model"
-	"github.com/google/uuid"
 )
 
-func postgresTestDSN(t *testing.T) string {
+type d1TestDatabase struct {
+	accountID  string
+	databaseID string
+	token      string
+}
+
+func d1TestEndpoint(t *testing.T) d1TestDatabase {
 	t.Helper()
-	raw := os.Getenv("TEST_POSTGRES_DSN")
-	if raw == "" {
-		t.Skip("TEST_POSTGRES_DSN is not set")
+	database := d1test.New(t)
+	return d1TestDatabase{
+		accountID: database.AccountID, databaseID: database.ID, token: database.Token,
 	}
-	dsn, err := url.Parse(raw)
-	if err != nil || (dsn.Scheme != "postgres" && dsn.Scheme != "postgresql") {
-		t.Fatalf("TEST_POSTGRES_DSN must be a postgres:// or postgresql:// URL: %v", err)
-	}
-	admin, err := sql.Open("pgx", raw)
-	if err != nil {
-		t.Fatalf("open TEST_POSTGRES_DSN: %v", err)
-	}
-	schema := "slopless_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema); err != nil {
-		_ = admin.Close()
-		t.Fatalf("create isolated schema: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
-			t.Errorf("drop isolated schema: %v", err)
-		}
-		if err := admin.Close(); err != nil {
-			t.Errorf("close PostgreSQL administration connection: %v", err)
-		}
-	})
-	query := dsn.Query()
-	query.Set("search_path", schema)
-	dsn.RawQuery = query.Encode()
-	return dsn.String()
 }
 
 type testService struct {
@@ -68,16 +42,30 @@ type testService struct {
 
 func (s *testService) Close() error { return errors.Join(s.client.Close(), s.store.Close()) }
 
-func openFixtureClient(dsn string) (*ent.Client, error) {
-	db, err := sql.Open("pgx", dsn)
+func openFixtureClient(database d1TestDatabase) (*ent.Client, error) {
+	driver, err := d1.New(database.accountID, database.databaseID, database.token)
 	if err != nil {
 		return nil, err
 	}
-	return ent.NewClient(ent.Driver(entsql.OpenDB(dialect.Postgres, db))), nil
+	return ent.NewClient(ent.Driver(driver)), nil
 }
 
-func openTestService(ctx context.Context, dsn string, credits config.Credits) (*testService, error) {
-	store, err := data.Open(ctx, dsn)
+func execFixtureSQL(t *testing.T, database d1TestDatabase, query string) {
+	t.Helper()
+	driver, err := d1.New(database.accountID, database.databaseID, database.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := driver.Exec(t.Context(), query, []any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func openTestService(ctx context.Context, database d1TestDatabase, credits config.Credits) (*testService, error) {
+	store, err := data.Open(
+		ctx, database.accountID, database.databaseID, database.token,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +74,7 @@ func openTestService(ctx context.Context, dsn string, credits config.Credits) (*
 		_ = store.Close()
 		return nil, err
 	}
-	client, err := openFixtureClient(dsn)
+	client, err := openFixtureClient(database)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -94,9 +82,9 @@ func openTestService(ctx context.Context, dsn string, credits config.Credits) (*
 	return &testService{Service: svc, client: client}, nil
 }
 
-func testStore(t *testing.T, dsn string) *testService {
+func testStore(t *testing.T, database d1TestDatabase) *testService {
 	t.Helper()
-	s, err := openTestService(t.Context(), dsn, config.DefaultCredits())
+	s, err := openTestService(t.Context(), database, config.DefaultCredits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +104,7 @@ func TestAccountBudgets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s := testStore(t, postgresTestDSN(t))
+			s := testStore(t, d1TestEndpoint(t))
 			identity := testIdentity(t, s)
 			_, err := s.client.RateEvent.Create().SetPolicy(tt.policy).SetSubject(strconv.Itoa(identity.UserID)).
 				SetUnits(tt.limit).SetExpiresAt(time.Now().Add(time.Minute)).Save(t.Context())
@@ -139,7 +127,7 @@ func TestAccountBudgets(t *testing.T) {
 
 func TestExpiredIdempotencyKeyCanBeReused(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	identity := testIdentity(t, s)
 	input := model.MarkInput{Accounts: []model.Account{{Platform: "github", Username: "example"}}, Key: "expired-operation-key", Marked: true}
 	if _, _, err := s.Mark(t.Context(), identity, input); err != nil {
@@ -185,9 +173,9 @@ func testIdentity(t *testing.T, s *testService) model.Identity {
 
 func TestConcurrentMarkAndPersistence(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	first := testStore(t, dsn)
-	second := testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	first := testStore(t, database)
+	second := testStore(t, database)
 	identity := testIdentity(t, first)
 	input := model.MarkInput{Accounts: []model.Account{{Platform: "github", Username: "example"}}, Marked: true, Key: "same-operation-key"}
 	type result struct {
@@ -233,7 +221,7 @@ func TestConcurrentMarkAndPersistence(t *testing.T) {
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened := testStore(t, dsn)
+	reopened := testStore(t, database)
 	if _, err := reopened.Login(t.Context(), "alice", "test-password"); err != nil {
 		t.Fatal(err)
 	}
@@ -254,18 +242,12 @@ func TestConcurrentMarkAndPersistence(t *testing.T) {
 
 func TestMarkRollsBackWholeBatch(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	s := testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	s := testStore(t, database)
 	identity := testIdentity(t, s)
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.ExecContext(t.Context(), `ALTER TABLE marks ADD CONSTRAINT reject_account CHECK (username <> 'reject')`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, `CREATE TRIGGER reject_account
+		BEFORE INSERT ON marks WHEN NEW.username = 'reject'
+		BEGIN SELECT RAISE(ABORT, 'reject account'); END`)
 	input := model.MarkInput{
 		Accounts: []model.Account{{Platform: "github", Username: "accepted"}, {Platform: "github", Username: "reject"}},
 		Marked:   true, Key: "rollback-operation",
@@ -282,9 +264,7 @@ func TestMarkRollsBackWholeBatch(t *testing.T) {
 			t.Fatalf("partial write: %+v", states)
 		}
 	}
-	if _, err := db.ExecContext(t.Context(), "ALTER TABLE marks DROP CONSTRAINT reject_account"); err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, "DROP TRIGGER reject_account")
 	states, replayed, err := s.Mark(t.Context(), identity, input)
 	if err != nil || replayed || states[0].MarkCount != 1 || states[1].MarkCount != 1 {
 		t.Fatalf("failed request consumed idempotency key: %+v, %v, %v", states, replayed, err)
@@ -293,8 +273,8 @@ func TestMarkRollsBackWholeBatch(t *testing.T) {
 
 func TestRateBudgetsSharedAndDurable(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	s := testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	s := testStore(t, database)
 	identity := testIdentity(t, s)
 	for range 10 {
 		if err := s.AdmitRequests(t.Context(), "mark", identity); err != nil {
@@ -309,7 +289,7 @@ func TestRateBudgetsSharedAndDurable(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s = testStore(t, dsn)
+	s = testStore(t, database)
 	err = s.AdmitRequests(t.Context(), "mark", identity)
 	if !errors.As(err, &rate) {
 		t.Fatalf("budget lost on restart: %v", err)
@@ -349,7 +329,7 @@ func TestRateBudgetsSharedAndDurable(t *testing.T) {
 
 func TestRateRetryUsesAllBlockingPolicies(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	now := time.Now()
 	for i, seconds := range []int{10, 40} {
 		_, err := s.client.RateEvent.Create().SetPolicy(fmt.Sprintf("policy-%d", i)).SetSubject("subject").

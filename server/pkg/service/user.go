@@ -59,6 +59,7 @@ func (s *Service) Register(ctx context.Context, input model.Registration) (*mode
 	}
 	var result *model.User
 	err = s.store.WithTx(ctx, func(tx *data.Store) error {
+		result = nil
 		invite, err := tx.InvitationByCode(ctx, input.InvitationCode)
 		if errors.Is(err, model.ErrNotFound) {
 			return model.ErrInvalidInvitation
@@ -81,7 +82,10 @@ func (s *Service) Register(ctx context.Context, input model.Registration) (*mode
 		}
 		return tx.ConsumeInvitation(ctx, invite.ID, time.Now())
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // CreateUser creates an account without invitation provenance for local administration only.
@@ -96,6 +100,7 @@ func (s *Service) CreateUser(ctx context.Context, username, password string) (*m
 	}
 	var result *model.User
 	err = s.store.WithTx(ctx, func(tx *data.Store) error {
+		result = nil
 		result, err = tx.CreateUser(ctx, data.UserRecord{
 			User:         model.User{Username: username},
 			PasswordHash: string(hash),

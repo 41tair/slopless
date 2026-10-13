@@ -88,7 +88,12 @@ func closeStore(store *data.Store, operation string) {
 func bootstrapInvitations(conf *config.Config, count int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	store, err := data.Open(ctx, conf.Data.DSN)
+	store, err := data.Open(
+		ctx,
+		conf.Data.AccountID,
+		conf.Data.DatabaseID,
+		os.Getenv(conf.Data.TokenEnv),
+	)
 	if err != nil {
 		return err
 	}
@@ -113,7 +118,12 @@ func createUser(conf *config.Config, username string) error {
 	password = strings.TrimSuffix(strings.TrimSuffix(password, "\n"), "\r")
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	store, err := data.Open(ctx, conf.Data.DSN)
+	store, err := data.Open(
+		ctx,
+		conf.Data.AccountID,
+		conf.Data.DatabaseID,
+		os.Getenv(conf.Data.TokenEnv),
+	)
 	if err != nil {
 		return err
 	}
@@ -139,7 +149,12 @@ func runServer(conf *config.Config) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	store, err := data.Open(ctx, conf.Data.DSN)
+	store, err := data.Open(
+		ctx,
+		conf.Data.AccountID,
+		conf.Data.DatabaseID,
+		os.Getenv(conf.Data.TokenEnv),
+	)
 	if err != nil {
 		return err
 	}

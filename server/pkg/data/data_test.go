@@ -1,29 +1,35 @@
 package data
 
 import (
-	"strings"
 	"testing"
 )
 
-func TestOpenRejectsUnsupportedDSN(t *testing.T) {
+func TestOpenRejectsInvalidD1Configuration(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name string
-		dsn  string
+		name       string
+		accountID  string
+		databaseID string
+		token      string
 	}{
-		{name: "empty"},
-		{name: "file", dsn: "file:database.db"},
-		{name: "other database", dsn: "mysql://localhost/slopless"},
+		{name: "missing account ID", databaseID: "database", token: "test-token"},
+		{name: "missing database ID", accountID: "account", token: "test-token"},
+		{name: "missing token", accountID: "account", databaseID: "database"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store, err := Open(t.Context(), tt.dsn)
+			store, err := Open(
+				t.Context(),
+				tt.accountID,
+				tt.databaseID,
+				tt.token,
+			)
 			if store != nil {
 				_ = store.Close()
-				t.Fatal("unsupported DSN opened a store")
+				t.Fatal("invalid D1 configuration opened a store")
 			}
-			if err == nil || !strings.Contains(err.Error(), "postgres:// or postgresql://") {
-				t.Fatalf("Open returned %v, want PostgreSQL URL validation error", err)
+			if err == nil {
+				t.Fatal("Open returned nil error for invalid D1 configuration")
 			}
 		})
 	}

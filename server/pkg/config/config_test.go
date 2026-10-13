@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const validData = "data:\n  account_id: account-id\n  database_id: database-id\n  token_env: CLOUDFLARE_API_KEY\n"
+
 func TestDataConfiguration(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -16,9 +18,12 @@ func TestDataConfiguration(t *testing.T) {
 		valid bool
 	}{
 		{name: "missing data"},
-		{name: "missing DSN", data: "data: {}\n"},
-		{name: "empty DSN", data: "data:\n  dsn: ''\n"},
-		{name: "PostgreSQL", data: "data:\n  dsn: 'postgresql://localhost/slopless'\n", valid: true},
+		{name: "missing account ID", data: "data:\n  database_id: database-id\n  token_env: CLOUDFLARE_API_KEY\n"},
+		{name: "empty account ID", data: "data:\n  account_id: '   '\n  database_id: database-id\n  token_env: CLOUDFLARE_API_KEY\n"},
+		{name: "missing database ID", data: "data:\n  account_id: account-id\n  token_env: CLOUDFLARE_API_KEY\n"},
+		{name: "empty database ID", data: "data:\n  account_id: account-id\n  database_id: '   '\n  token_env: CLOUDFLARE_API_KEY\n"},
+		{name: "missing token environment", data: "data:\n  account_id: account-id\n  database_id: database-id\n"},
+		{name: "D1 REST", data: validData, valid: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -54,7 +59,7 @@ func TestCreditConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.yaml")
-			body := "server:\n  addr: ':8090'\ndata:\n  dsn: 'postgresql://localhost/slopless'\n" + tt.extra
+			body := "server:\n  addr: ':8090'\n" + validData + tt.extra
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +99,7 @@ func TestTrustedProxyConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "config.yaml")
-			body := "server:\n  addr: ':8090'\n  trusted_proxies: [" + strings.Join(tt.values, ", ") + "]\ndata:\n  dsn: 'postgresql://localhost/slopless'\n"
+			body := "server:\n  addr: ':8090'\n  trusted_proxies: [" + strings.Join(tt.values, ", ") + "]\n" + validData
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
 			}

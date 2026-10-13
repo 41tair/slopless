@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	entschema "entgo.io/ent/dialect/sql/schema"
+	"github.com/41tair/slopless/pkg/d1"
 	"github.com/41tair/slopless/pkg/data/ent"
 	"github.com/41tair/slopless/pkg/data/ent/credential"
 	"github.com/41tair/slopless/pkg/data/ent/idempotency"
 	"github.com/41tair/slopless/pkg/data/ent/migrate"
 	"github.com/41tair/slopless/pkg/data/ent/rateevent"
 	"github.com/41tair/slopless/pkg/model"
-	"github.com/jackc/pgx/v5/pgconn"
+	"modernc.org/sqlite"
 )
 
 var ErrConflict = errors.New("database constraint conflict")
@@ -23,12 +23,28 @@ type Store struct {
 	client *ent.Client
 }
 
-// Open opens a PostgreSQL store from a postgres:// or postgresql:// URL.
-func Open(ctx context.Context, dsn string) (*Store, error) {
-	if !strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://") {
-		return nil, fmt.Errorf("data.dsn must be a postgres:// or postgresql:// URL")
+// Open connects Ent to the D1 REST API and initializes the application schema.
+func Open(ctx context.Context, accountID, databaseID, token string) (*Store, error) {
+	driver, err := d1.New(accountID, databaseID, token)
+	if err != nil {
+		return nil, err
 	}
-	return openPostgres(ctx, dsn)
+	client := ent.NewClient(ent.Driver(driver))
+	for attempt := range 16 {
+		err = initialize(ctx, client)
+		if err == nil {
+			return &Store{client: client}, nil
+		}
+		if !errors.Is(err, d1.ErrConflict) {
+			break
+		}
+		if pauseErr := waitConflict(ctx, attempt); pauseErr != nil {
+			err = pauseErr
+			break
+		}
+	}
+	_ = client.Close()
+	return nil, fmt.Errorf("initialize D1 database: %w", databaseError(err))
 }
 
 func initialize(ctx context.Context, client *ent.Client) error {
@@ -49,18 +65,40 @@ func initialize(ctx context.Context, client *ent.Client) error {
 
 func (s *Store) Close() error { return s.client.Close() }
 
-// WithTx runs application work on an isolated transaction-bound store. The
-// callback must use tx for every read and write; no transaction lives in context.
+// WithTx runs application work on an isolated D1 snapshot and commits its changes
+// atomically. On a version conflict, fn runs again with a fresh snapshot; fn must
+// reset its outputs and perform no external side effects. Use tx for all work.
 func (s *Store) WithTx(ctx context.Context, fn func(tx *Store) error) error {
-	tx, err := s.client.Tx(ctx)
-	if err != nil {
-		return databaseError(err)
+	for attempt := range 16 {
+		tx, err := s.client.Tx(ctx)
+		if err != nil {
+			return databaseError(err)
+		}
+		if err := fn(&Store{client: tx.Client()}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		err = tx.Commit()
+		_ = tx.Rollback()
+		if !errors.Is(err, d1.ErrConflict) {
+			return databaseError(err)
+		}
+		if err := waitConflict(ctx, attempt); err != nil {
+			return databaseError(err)
+		}
 	}
-	defer tx.Rollback()
-	if err := fn(&Store{client: tx.Client()}); err != nil {
-		return err
+	return errors.Join(model.ErrUnavailable, d1.ErrConflict)
+}
+
+func waitConflict(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(time.Duration(min(1<<attempt, 50)) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return databaseError(tx.Commit())
 }
 
 func databaseError(err error) error {
@@ -73,18 +111,17 @@ func databaseError(err error) error {
 	if ent.IsConstraintError(err) {
 		return errors.Join(ErrConflict, err)
 	}
-	var postgresErr *pgconn.PgError
-	if errors.As(err, &postgresErr) {
-		if strings.HasPrefix(postgresErr.Code, "23") {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() & 0xff {
+		case 19: // SQLITE_CONSTRAINT, including extended constraint codes.
 			return errors.Join(ErrConflict, err)
-		}
-		if strings.HasPrefix(postgresErr.Code, "08") || postgresErr.Code == "40001" ||
-			postgresErr.Code == "40P01" || postgresErr.Code == "55P03" ||
-			postgresErr.Code == "53300" || postgresErr.Code == "57P01" || postgresErr.Code == "57P02" || postgresErr.Code == "57P03" {
+		case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED.
 			return errors.Join(model.ErrUnavailable, err)
 		}
 	}
-	if pgconn.SafeToRetry(err) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, d1.ErrUnavailable) || errors.Is(err, d1.ErrConflict) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return errors.Join(model.ErrUnavailable, err)
 	}
 	return err

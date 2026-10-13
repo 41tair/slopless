@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strings"
 
 	"go.yaml.in/yaml/v4"
 )
@@ -87,7 +88,9 @@ func (s Server) TrustedProxyPrefixes() ([]netip.Prefix, error) {
 }
 
 type Data struct {
-	DSN string `yaml:"dsn"`
+	AccountID  string `yaml:"account_id"`
+	DatabaseID string `yaml:"database_id"`
+	TokenEnv   string `yaml:"token_env"`
 }
 
 func ParseConfig(f string) (*Config, error) {
@@ -125,8 +128,14 @@ func (c *Config) Validate() error {
 	if c.Data == nil {
 		return fmt.Errorf("data configuration is required")
 	}
-	if c.Data.DSN == "" {
-		return fmt.Errorf("data.dsn is required")
+	if strings.TrimSpace(c.Data.AccountID) == "" {
+		return fmt.Errorf("data.account_id is required")
+	}
+	if strings.TrimSpace(c.Data.DatabaseID) == "" {
+		return fmt.Errorf("data.database_id is required")
+	}
+	if c.Data.TokenEnv == "" {
+		return fmt.Errorf("data.token_env is required")
 	}
 	return c.Credits.Validate()
 }

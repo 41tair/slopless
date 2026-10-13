@@ -15,7 +15,7 @@ import (
 
 func TestCreateUserForLocalAdministration(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	const password = "admin-password"
 	u, err := s.CreateUser(t.Context(), " Admin-User ", password)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestCreateUserForLocalAdministration(t *testing.T) {
 
 func TestCreateUserDuplicatePreservesPassword(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	const originalPassword = "original-password"
 	if _, err := s.CreateUser(t.Context(), "operator", originalPassword); err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestCreateUserDuplicatePreservesPassword(t *testing.T) {
 
 func TestCreateUserInvalidCredentialsDoNotPersist(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	tests := []struct {
 		name     string
 		username string
@@ -94,7 +94,7 @@ func TestCreateUserInvalidCredentialsDoNotPersist(t *testing.T) {
 
 func TestSessionAndTokenRulesWithoutHTTP(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	identity := testIdentity(t, s)
 	login, err := s.Login(t.Context(), " ALICE ", "test-password")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestSessionAndTokenRulesWithoutHTTP(t *testing.T) {
 
 func TestAccountNormalizationPrecedesIdempotencyAndCharging(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	identity := testIdentity(t, s)
 	input := model.MarkInput{Key: "normalized-operation", Marked: true, Accounts: []model.Account{
 		{Platform: "github", Username: " Example "},

@@ -5,4 +5,7 @@
 !cmd/**
 !pkg
 !pkg/**
+!configs
+!configs/config.yaml
 **/*_test.go
+**/node_modules

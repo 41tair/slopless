@@ -64,6 +64,7 @@ func (s *Service) Query(
 	}
 	result := []model.AccountState{}
 	err = s.store.WithTx(ctx, func(tx *data.Store) error {
+		result = nil
 		if err := admit(ctx, tx, accountPolicies("query", identity, len(accounts))); err != nil {
 			return err
 		}
@@ -71,7 +72,10 @@ func (s *Service) Query(
 		result, err = tx.Snapshot(ctx, identity.UserID, accounts)
 		return err
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Service) Mark(
@@ -96,6 +100,8 @@ func (s *Service) Mark(
 	result := []model.AccountState{}
 	replayed := false
 	err = s.store.WithTx(ctx, func(tx *data.Store) error {
+		result = nil
+		replayed = false
 		previous, err := tx.Replay(ctx, identity.UserID, input.Key)
 		if err != nil && !errors.Is(err, model.ErrNotFound) {
 			return err
@@ -134,5 +140,8 @@ func (s *Service) Mark(
 		return tx.SaveReplay(ctx, data.Replay{UserID: identity.UserID, Key: input.Key, Fingerprint: fingerprint,
 			Response: response, ExpiresAt: time.Now().Add(48 * time.Hour)})
 	})
-	return result, replayed, err
+	if err != nil {
+		return nil, false, err
+	}
+	return result, replayed, nil
 }

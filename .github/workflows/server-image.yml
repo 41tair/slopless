@@ -1,0 +1,52 @@
+name: Server image
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "server/**"
+      - Makefile
+      - .github/workflows/server-image.yml
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set image metadata
+        id: image
+        shell: bash
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "source=https://github.com/${GITHUB_REPOSITORY}" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          SOURCE: ${{ steps.image.outputs.source }}
+        run: make docker-build IMAGE="$IMAGE" TAG="sha-$GITHUB_SHA" SOURCE="$SOURCE"
+      - name: Tag and push image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:latest"
+          make docker-push IMAGE="$IMAGE" TAG="sha-$GITHUB_SHA"
+          make docker-push IMAGE="$IMAGE" TAG=latest

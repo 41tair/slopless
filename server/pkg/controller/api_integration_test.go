@@ -3,22 +3,19 @@
 package controller
 
 import (
-	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/41tair/slopless/pkg/config"
+	"github.com/41tair/slopless/pkg/d1/d1test"
 	"github.com/41tair/slopless/pkg/data"
 	"github.com/41tair/slopless/pkg/model"
 	"github.com/41tair/slopless/pkg/service"
@@ -37,9 +34,11 @@ type testRequest struct {
 
 type testHandler struct {
 	http.Handler
-	store   *data.Store
-	service *service.Service
-	dsn     string
+	store      *data.Store
+	service    *service.Service
+	accountID  string
+	databaseID string
+	token      string
 }
 
 func perform(handler http.Handler, input testRequest) *httptest.ResponseRecorder {
@@ -81,38 +80,11 @@ func requireStatus(t *testing.T, response *httptest.ResponseRecorder, status int
 
 func fixture(t *testing.T) (*service.Service, http.Handler) {
 	t.Helper()
-	raw := os.Getenv("TEST_POSTGRES_DSN")
-	if raw == "" {
-		t.Skip("TEST_POSTGRES_DSN is not set")
-	}
-	dsn, err := url.Parse(raw)
-	if err != nil || (dsn.Scheme != "postgres" && dsn.Scheme != "postgresql") {
-		t.Fatalf("TEST_POSTGRES_DSN must be a postgres:// or postgresql:// URL: %v", err)
-	}
-	admin, err := sql.Open("pgx", raw)
-	if err != nil {
-		t.Fatalf("open TEST_POSTGRES_DSN: %v", err)
-	}
-	schema := "slopless_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema); err != nil {
-		_ = admin.Close()
-		t.Fatalf("create isolated schema: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := admin.ExecContext(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
-			t.Errorf("drop isolated schema: %v", err)
-		}
-		if err := admin.Close(); err != nil {
-			t.Errorf("close PostgreSQL administration connection: %v", err)
-		}
-	})
-	query := dsn.Query()
-	query.Set("search_path", schema)
-	dsn.RawQuery = query.Encode()
+	database := d1test.New(t)
 
-	store, err := data.Open(t.Context(), dsn.String())
+	store, err := data.Open(
+		t.Context(), database.AccountID, database.ID, database.Token,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +97,10 @@ func fixture(t *testing.T) (*service.Service, http.Handler) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return svc, &testHandler{Handler: NewRouter(svc, true), store: store, service: svc, dsn: dsn.String()}
+	return svc, &testHandler{
+		Handler: NewRouter(svc, true), store: store, service: svc,
+		accountID: database.AccountID, databaseID: database.ID, token: database.Token,
+	}
 }
 
 func seedInvitation(t *testing.T, handler http.Handler) string {
@@ -377,7 +352,9 @@ func TestOpenAPIRequestAdmissionOrderingAndSharing(t *testing.T) {
 		t.Fatalf("request rejection charged %d account units", got)
 	}
 
-	secondStore, err := data.Open(t.Context(), testServer.dsn)
+	secondStore, err := data.Open(
+		t.Context(), testServer.accountID, testServer.databaseID, testServer.token,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +372,9 @@ func TestOpenAPIRequestAdmissionOrderingAndSharing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopenedStore, err := data.Open(t.Context(), testServer.dsn)
+	reopenedStore, err := data.Open(
+		t.Context(), testServer.accountID, testServer.databaseID, testServer.token,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

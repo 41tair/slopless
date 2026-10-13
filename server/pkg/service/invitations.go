@@ -16,6 +16,7 @@ func (s *Service) BootstrapInvitations(ctx context.Context, count int) ([]*model
 	}
 	invites := make([]*model.Invitation, 0, count)
 	err := s.store.WithTx(ctx, func(tx *data.Store) error {
+		invites = invites[:0]
 		for range count {
 			invite, err := tx.CreateInvitation(ctx, model.Invitation{Code: newSecret("sli_")}, nil)
 			if err != nil {
@@ -25,7 +26,10 @@ func (s *Service) BootstrapInvitations(ctx context.Context, count int) ([]*model
 		}
 		return nil
 	})
-	return invites, err
+	if err != nil {
+		return nil, err
+	}
+	return invites, nil
 }
 
 func (s *Service) PurchaseInvitation(ctx context.Context, userID int, key string) (*model.Invitation, bool, error) {
@@ -35,6 +39,8 @@ func (s *Service) PurchaseInvitation(ctx context.Context, userID int, key string
 	var result *model.Invitation
 	replayed := false
 	err := s.store.WithTx(ctx, func(tx *data.Store) error {
+		result = nil
+		replayed = false
 		previous, err := tx.InvitationByPurchase(ctx, userID, key)
 		if err != nil && !errors.Is(err, model.ErrNotFound) {
 			return err
@@ -64,7 +70,10 @@ func (s *Service) PurchaseInvitation(ctx context.Context, userID int, key string
 		return tx.CreateCreditEntry(ctx, data.CreditRecord{UserID: userID, Amount: -result.Cost, BalanceAfter: balance,
 			Reason: "invitation_purchase", InvitationID: &result.ID})
 	})
-	return result, replayed, err
+	if err != nil {
+		return nil, false, err
+	}
+	return result, replayed, nil
 }
 
 func (s *Service) Invitations(ctx context.Context, userID int, page model.Page) ([]*model.Invitation, int, error) {

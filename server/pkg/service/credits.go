@@ -29,6 +29,7 @@ func (s *Service) Credits(ctx context.Context, userID int, page model.Page) (*mo
 	}
 	var result *model.Credits
 	err := s.store.WithTx(ctx, func(tx *data.Store) error {
+		result = nil
 		var err error
 		result, err = tx.Credits(ctx, userID, page)
 		return err

@@ -3,18 +3,15 @@
 package service
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
-	entschema "entgo.io/ent/dialect/sql/schema"
 	"github.com/41tair/slopless/pkg/config"
 	"github.com/41tair/slopless/pkg/data/ent/account"
 	"github.com/41tair/slopless/pkg/data/ent/confirmation"
 	"github.com/41tair/slopless/pkg/data/ent/invitation"
-	"github.com/41tair/slopless/pkg/data/ent/migrate"
 	"github.com/41tair/slopless/pkg/model"
 )
 
@@ -73,7 +70,7 @@ func balance(t *testing.T, s *testService, userID int, want int64) *model.Credit
 
 func TestPropagationAndBranchDeduplication(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	root := creditUser(t, s, "root", 0)
 	a := creditUser(t, s, "alice", root.UserID)
 	b := creditUser(t, s, "bob", a.UserID)
@@ -114,7 +111,7 @@ func TestPropagationAndBranchDeduplication(t *testing.T) {
 
 func TestRewardRequiresActiveFirstMarker(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	a := creditUser(t, s, "alice", 0)
 	b := creditUser(t, s, "bob", 0)
 	x := []model.Account{{Platform: "github", Username: "target"}}
@@ -150,7 +147,7 @@ func TestRewardCountAndTotalCaps(t *testing.T) {
 			policy := config.DefaultCredits()
 			policy.MaxRewardPerAccount = tt.maximum
 			policy.MaxConfirmationsPerAccount = tt.confirmations
-			s, err := openTestService(t.Context(), postgresTestDSN(t), policy)
+			s, err := openTestService(t.Context(), d1TestEndpoint(t), policy)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,8 +175,8 @@ func TestRewardCountAndTotalCaps(t *testing.T) {
 
 func TestConcurrentRewardsAcrossStores(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	first, second := testStore(t, dsn), testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	first, second := testStore(t, database), testStore(t, database)
 	a := creditUser(t, first, "alice", 0)
 	b := creditUser(t, first, "bob", a.UserID)
 	c := creditUser(t, first, "carol", b.UserID)
@@ -212,7 +209,7 @@ func TestConcurrentRewardsAcrossStores(t *testing.T) {
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened := testStore(t, dsn)
+	reopened := testStore(t, database)
 	creditMark(t, reopened, c, model.MarkInput{Accounts: x, Marked: false, Key: "withdraw"})
 	creditMark(t, reopened, c, model.MarkInput{Accounts: x, Marked: true, Key: "restore"})
 	balance(t, reopened, a.UserID, 10)
@@ -221,23 +218,16 @@ func TestConcurrentRewardsAcrossStores(t *testing.T) {
 
 func TestCreditFailureRollsBackMarksAndAwards(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	s := testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	s := testStore(t, database)
 	a := creditUser(t, s, "alice", 0)
 	b := creditUser(t, s, "bob", a.UserID)
 	c := creditUser(t, s, "carol", b.UserID)
 	x := []model.Account{{Platform: "github", Username: "target"}}
 	creditMark(t, s, a, model.MarkInput{Accounts: x, Marked: true, Key: "first"})
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.ExecContext(t.Context(), `ALTER TABLE credit_entries ADD CONSTRAINT reject_reward
-		CHECK (reason <> 'invitation_contribution')`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, `CREATE TRIGGER reject_reward
+		BEFORE INSERT ON credit_entries WHEN NEW.reason = 'invitation_contribution'
+		BEGIN SELECT RAISE(ABORT, 'reject reward'); END`)
 	input := model.MarkInput{Accounts: x, Marked: true, Key: "confirmation"}
 	if _, _, err := s.Mark(t.Context(), c, input); err == nil {
 		t.Fatal("expected payout failure")
@@ -252,9 +242,7 @@ func TestCreditFailureRollsBackMarksAndAwards(t *testing.T) {
 	if err != nil || count != 0 {
 		t.Fatalf("failed payout left a confirmation: %d, %v", count, err)
 	}
-	if _, err := db.ExecContext(t.Context(), "ALTER TABLE credit_entries DROP CONSTRAINT reject_reward"); err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, "DROP TRIGGER reject_reward")
 	creditMark(t, s, c, input)
 	balance(t, s, a.UserID, 10)
 	balance(t, s, b.UserID, 2)
@@ -262,7 +250,7 @@ func TestCreditFailureRollsBackMarksAndAwards(t *testing.T) {
 
 func TestInvitationSingleUseAndRollback(t *testing.T) {
 	t.Parallel()
-	s := testStore(t, postgresTestDSN(t))
+	s := testStore(t, d1TestEndpoint(t))
 	issuer := creditUser(t, s, "issuer", 0)
 	invite, err := s.client.Invitation.Create().SetCode(newSecret("sli_")).SetIssuerID(issuer.UserID).
 		SetPurchaseKey("registration-test").Save(t.Context())
@@ -310,8 +298,8 @@ func TestInvitationSingleUseAndRollback(t *testing.T) {
 
 func TestConcurrentInvitationPurchase(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	s, other := testStore(t, dsn), testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	s, other := testStore(t, database), testStore(t, database)
 	a := creditUser(t, s, "alice", 0)
 	witness := creditUser(t, s, "witness", 0)
 	accounts := make([]model.Account, 10)
@@ -370,30 +358,19 @@ func TestConcurrentInvitationPurchase(t *testing.T) {
 
 func TestMigrationPreservesLegacyMarksWithoutRetroactiveRewards(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	client, err := openFixtureClient(dsn)
+	database := d1TestEndpoint(t)
+	legacyStore := testStore(t, database)
+	legacy, err := legacyStore.client.User.Create().SetUsername("legacy").SetPasswordHash("").Save(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
-	tables, err := entschema.CopyTables(migrate.Tables)
-	if err != nil {
+	if _, err := legacyStore.client.Mark.Create().SetUserID(legacy.ID).SetPlatform("github").SetUsername("old-target").Save(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate.Create(t.Context(), client.Schema, tables); err != nil {
+	if err := legacyStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := client.User.Create().SetUsername("legacy").SetPasswordHash("").Save(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Mark.Create().SetUserID(legacy.ID).SetPlatform("github").SetUsername("old-target").Save(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s := testStore(t, dsn)
+	s := testStore(t, database)
 	newcomer := creditUser(t, s, "newcomer", 0)
 	targets := []model.Account{{Platform: "github", Username: "old-target"}}
 	states, err := s.Query(t.Context(), newcomer, targets)
@@ -411,8 +388,8 @@ func TestMigrationPreservesLegacyMarksWithoutRetroactiveRewards(t *testing.T) {
 
 func TestInvitationDebitFailureRollsBack(t *testing.T) {
 	t.Parallel()
-	dsn := postgresTestDSN(t)
-	s := testStore(t, dsn)
+	database := d1TestEndpoint(t)
+	s := testStore(t, database)
 	a := creditUser(t, s, "alice", 0)
 	witness := creditUser(t, s, "witness", 0)
 	accounts := make([]model.Account, 10)
@@ -421,16 +398,9 @@ func TestInvitationDebitFailureRollsBack(t *testing.T) {
 	}
 	creditMark(t, s, a, model.MarkInput{Accounts: accounts, Marked: true, Key: "first"})
 	creditMark(t, s, witness, model.MarkInput{Accounts: accounts, Marked: true, Key: "confirm"})
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.ExecContext(t.Context(), `ALTER TABLE credit_entries ADD CONSTRAINT reject_debit
-		CHECK (reason <> 'invitation_purchase')`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, `CREATE TRIGGER reject_debit
+		BEFORE INSERT ON credit_entries WHEN NEW.reason = 'invitation_purchase'
+		BEGIN SELECT RAISE(ABORT, 'reject debit'); END`)
 	if _, _, err := s.PurchaseInvitation(t.Context(), a.UserID, "purchase"); err == nil {
 		t.Fatal("expected debit failure")
 	}
@@ -439,9 +409,7 @@ func TestInvitationDebitFailureRollsBack(t *testing.T) {
 	if err != nil || len(invites) != 0 {
 		t.Fatalf("failed debit left invitation: %+v, %v", invites, err)
 	}
-	if _, err := db.ExecContext(t.Context(), "ALTER TABLE credit_entries DROP CONSTRAINT reject_debit"); err != nil {
-		t.Fatal(err)
-	}
+	execFixtureSQL(t, database, "DROP TRIGGER reject_debit")
 	if _, replayed, err := s.PurchaseInvitation(t.Context(), a.UserID, "purchase"); err != nil || replayed {
 		t.Fatalf("failed purchase consumed key: replayed %v, error %v", replayed, err)
 	}
