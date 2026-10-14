@@ -9,6 +9,9 @@ import { spawn } from "node:child_process";
 const directory = dirname(fileURLToPath(import.meta.url));
 const templatePath = join(directory, "wrangler.template.json");
 const wranglerPath = join(directory, "node_modules", ".bin", "wrangler");
+const workerNotFoundCodes = new Set([10007, 10090]);
+const authorizationErrorCodes = new Set([10000, 9106]);
+const workerAccessTimeoutMilliseconds = 15_000;
 
 function valueAfter(args, index, option) {
   const value = args[index + 1];
@@ -100,6 +103,68 @@ export function renderConfig(template, options, plan = deploymentPlan(options)) 
   return encoded;
 }
 
+function workerAccessError(workerName, accountID) {
+  return new Error(
+    `CLOUDFLARE_API_TOKEN cannot access Worker "${workerName}" in target account ${accountID}; ` +
+    "grant Workers Scripts Write (or Workers Editor), and use Workers Admin at the Workers product scope for the first deployment"
+  );
+}
+
+export async function checkWorkerAccess({
+  workerName,
+  accountID,
+  token,
+  fetchImpl = globalThis.fetch
+}) {
+  const endpoint =
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountID)}` +
+    `/workers/scripts/${encodeURIComponent(workerName)}/secrets`;
+
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(workerAccessTimeoutMilliseconds)
+    });
+  } catch (error) {
+    if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+      throw new Error("Cloudflare Worker access preflight timed out after 15 seconds");
+    }
+    throw new Error("Cloudflare Worker access preflight network request failed");
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    if (response.status >= 500) {
+      throw new Error(`Cloudflare API unavailable during Worker access preflight (HTTP ${response.status})`);
+    }
+    throw new Error(`Cloudflare Worker access preflight received an invalid API response (HTTP ${response.status})`);
+  }
+
+  const errorCodes = Array.isArray(payload?.errors)
+    ? payload.errors.map((error) => Number(error?.code)).filter(Number.isFinite)
+    : [];
+  const authorizationDenied =
+    response.status === 401 ||
+    response.status === 403 ||
+    errorCodes.some((code) => authorizationErrorCodes.has(code));
+  if (authorizationDenied) throw workerAccessError(workerName, accountID);
+
+  if (response.status >= 200 && response.status < 300 && payload?.success === true) return;
+
+  const onlyWorkerNotFound =
+    errorCodes.length > 0 && errorCodes.every((code) => workerNotFoundCodes.has(code));
+  if (response.status >= 400 && response.status < 500 && onlyWorkerNotFound) return;
+
+  if (response.status >= 500) {
+    throw new Error(`Cloudflare API unavailable during Worker access preflight (HTTP ${response.status})`);
+  }
+  throw new Error(`Cloudflare Worker access preflight failed (HTTP ${response.status})`);
+}
+
 function run(command, args, environment) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -126,6 +191,13 @@ export async function deploy(options, environment = process.env) {
   if (!environment.CLOUDFLARE_API_TOKEN?.trim()) {
     throw new Error("CLOUDFLARE_API_TOKEN is required for deployment");
   }
+
+  const renderedConfig = JSON.parse(config);
+  await checkWorkerAccess({
+    workerName: renderedConfig.name,
+    accountID: options.accountID,
+    token: environment.CLOUDFLARE_API_TOKEN.trim()
+  });
 
   const generatedConfig = join(directory, `.wrangler.generated-${process.pid}-${randomUUID()}.json`);
   try {

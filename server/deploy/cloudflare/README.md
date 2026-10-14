@@ -1,12 +1,33 @@
 # Cloudflare Containers deployment
 
-This directory deploys the already-built server image to one Cloudflare Container instance. The Worker owns the public route, waits up to 60 seconds for port `8090`, and forwards requests to the fixed `main` instance. The container has no direct public ingress and has no general Internet access.
+This directory deploys the already-built server image to one Cloudflare Container instance. The Worker serves `https://slopless.byron.fun`, waits up to 60 seconds for port `8090`, and forwards requests to the fixed `main` instance. The container has no direct public ingress and has no general Internet access. `workers.dev` and version preview URLs are disabled.
 
 The container sends D1 requests to `http://d1.internal`. `ServerContainer.outboundByHost` handles only `POST /query` and `POST /raw`, then invokes the Worker's native `DB` binding. This keeps application traffic off the Cloudflare account-management REST API and its global API-token rate limit. `/query` uses `D1Database.batch`; `/raw` permits one read-only statement and uses `raw({ columnNames: true })` so the Go client retains column order.
 
 ## One-time setup
 
-Create a D1 database and an account-scoped Cloudflare API token with [`Workers Scripts Write`, `D1 Write`, and `Containers Write`](https://developers.cloudflare.com/fundamentals/api/reference/permissions/). Store the token manually as the GitHub Actions secret `CLOUDFLARE_API_TOKEN`. Configure these non-secret repository or environment variables:
+Create a D1 database and a Cloudflare API token whose resource scope includes
+the account selected by `CLOUDFLARE_ACCOUNT_ID`. For classic token permissions,
+grant Workers Scripts, D1, and Containers write access (shown as Edit/Write in
+the dashboard). See the [API token permission list](https://developers.cloudflare.com/fundamentals/api/reference/permissions/).
+
+If using the newer granular roles, first-time deployment needs **Admin at the
+Workers product scope** to create `slopless-server`; Editor or a scope limited
+to an existing Worker is insufficient for creation. Once the Worker exists,
+deployment can use Editor scoped to that Worker. Retain D1 and Containers
+permissions for migrations and image publication. See [Workers authorization](https://developers.cloudflare.com/workers/authorization/).
+
+Custom Domain publication also needs **Workers Routes Write** on the
+`byron.fun` zone. The zone must be active in the same Cloudflare account.
+The hostname is set in `wrangler.template.json`; it needs no additional GitHub
+variable. Cloudflare manages its DNS record and HTTPS certificate. See
+[Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+and [Workers permissions](https://developers.cloudflare.com/workers/authorization/workers/).
+
+Store the token manually as the GitHub Actions repository secret
+`CLOUDFLARE_API_TOKEN`. Updating a token in Cloudflare does not replace a
+different token already saved in GitHub. Configure these non-secret repository
+variables:
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_D1_DATABASE_ID`
@@ -38,7 +59,23 @@ docker pull --platform linux/amd64 ghcr.io/41tair/slopless:sha-<full-commit>
 make cf-deploy COMMIT=<full-commit>
 ```
 
-The source image must already exist locally as `IMAGE:sha-COMMIT`. The script retags that image for Cloudflare, runs `wrangler containers push`, writes a short-lived rendered Wrangler configuration that refers to the immutable Cloudflare registry tag, applies remote D1 migrations, and runs `wrangler deploy`. It does not rebuild the image. Migrations must remain compatible with the currently deployed Worker because they are applied before the new Worker version starts serving traffic.
+The source image must already exist locally as `IMAGE:sha-COMMIT`. The script
+first checks read access to the target Worker's Secrets API, then retags the
+image for Cloudflare, runs `wrangler containers push`, writes a short-lived
+rendered Wrangler configuration, applies remote D1 migrations, and runs
+`wrangler deploy`. The check catches denied Worker access before a migration;
+it cannot prove permission to create or update a Worker. It does not rebuild
+the image. Migrations must remain compatible with the currently deployed
+Worker because they are applied before the new Worker version starts serving
+traffic.
+
+If deployment fails on `/workers/scripts/slopless-server/secrets` with
+`No access to the specified resource`, check the token's Workers permissions
+and resource scope, then replace the GitHub secret if you created a new token.
+Wrangler queries that endpoint to detect variable/binding names that collide
+with existing Worker secrets; no application Secret needs to be created there.
+An applied migration remains applied. Rerunning deployment lets Wrangler skip
+the already-recorded migration and continue with Worker deployment.
 
 ```sh
 CLOUDFLARE_API_TOKEN=... \

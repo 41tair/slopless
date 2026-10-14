@@ -4,6 +4,14 @@
   "main": "./src/index.mjs",
   "compatibility_date": "2026-10-13",
   "account_id": "__CLOUDFLARE_ACCOUNT_ID__",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "slopless.byron.fun",
+      "custom_domain": true
+    }
+  ],
   "observability": {
     "enabled": true
   },
